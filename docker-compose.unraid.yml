@@ -1,0 +1,34 @@
+video-encoder:
+  image: registry.mageek.su/al-web-video-encoder:latest
+  pull_policy: always
+  container_name: altt_video_encoder
+  restart: unless-stopped
+  ports:
+    - "3000:5000"
+  volumes:
+    - /mnt/user/appdata/al-web-video-encoder/uploads:/app/uploads
+    # Хранилище исходников для внутреннего режима (раскомментируйте):
+    # - /mnt/user/anilibria:/anilibria:ro
+    - /mnt/user/appdata/al-web-video-encoder/outputs:/app/outputs
+    - /mnt/user/appdata/al-web-video-encoder/logs:/app/logs
+    - /mnt/user/appdata/al-web-video-encoder/settings:/app/settings
+    - /mnt/user/appdata/al-web-video-encoder/data:/app/data
+    - /mnt/user/appdata/al-web-video-encoder/ffmpeg:/app/ffmpeg
+  environment:
+    FLASK_ENV: production
+    PYTHONPATH: /app
+    FLASK_DEBUG: "0"
+    FFMPEG_THREAD_QUEUE_SIZE: "1024"
+    LOG_LEVEL: WARNING
+    CONSOLE_LOG_LEVEL: WARNING
+    MEMORY_LOG_LEVEL: INFO
+    TZ: Asia/Novosibirsk
+    CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+    SOCKETIO_ASYNC_MODE: threading
+    INTERNAL_SOURCE_ROOTS: /anilibria
+  healthcheck:
+    test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+    interval: 30s
+    timeout: 10s
+    retries: 3
+    start_period: 120s

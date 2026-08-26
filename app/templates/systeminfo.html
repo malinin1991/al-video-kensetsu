@@ -1,0 +1,259 @@
+{% extends "base.html" %}
+
+{% block title %}Информация о системе{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="row">
+        <div class="col-12">
+            <div class="d-flex justify-content-between align-items-center mb-4">
+                <h1><i class="bi bi-info-circle"></i> Информация о системе</h1>
+                <a href="/" class="btn btn-outline-primary">
+                    <i class="bi bi-arrow-left"></i> Назад к кодированию
+                </a>
+            </div>
+        </div>
+    </div>
+    
+    <div class="row">
+        <div class="col-lg-6">
+            <!-- Информация о процессоре -->
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="bi bi-cpu"></i> Процессор
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-sm-4"><strong>Ядра:</strong></div>
+                        <div class="col-sm-8" id="cpuCores">Загрузка...</div>
+                    </div>
+                    <div class="row">
+                        <div class="col-sm-4"><strong>Архитектура:</strong></div>
+                        <div class="col-sm-8" id="cpuArch">Загрузка...</div>
+                    </div>
+                    <div class="row">
+                        <div class="col-sm-4"><strong>Модель:</strong></div>
+                        <div class="col-sm-8" id="cpuModel">Загрузка...</div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Информация о памяти -->
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="bi bi-memory"></i> Память
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-sm-4"><strong>Общая RAM:</strong></div>
+                        <div class="col-sm-8" id="totalMemory">Загрузка...</div>
+                    </div>
+                    <div class="col-sm-4"><strong>Доступная RAM:</strong></div>
+                        <div class="col-sm-8" id="availableMemory">Загрузка...</div>
+                    </div>
+                    <div class="row">
+                        <div class="col-sm-4"><strong>Использование:</strong></div>
+                        <div class="col-sm-8">
+                            <div class="progress">
+                                <div class="progress-bar" id="memoryProgress" role="progressbar" style="width: 0%"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-lg-6">
+            <!-- Информация о приложении -->
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="bi bi-app"></i> Приложение
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-sm-4"><strong>Версия:</strong></div>
+                        <div class="col-sm-8" id="appVersion">Загрузка...</div>
+                    </div>
+                    <div class="row">
+                        <div class="col-sm-4"><strong>Окружение:</strong></div>
+                        <div class="col-sm-8" id="environment">Загрузка...</div>
+                    </div>
+                    <div class="row">
+                        <div class="col-sm-4"><strong>Сборка:</strong></div>
+                        <div class="col-sm-8" id="buildNumber">Загрузка...</div>
+                    </div>
+                    <div class="row">
+                        <div class="col-sm-4"><strong>Python:</strong></div>
+                        <div class="col-sm-8" id="pythonVersion">Загрузка...</div>
+                    </div>
+                    <div class="row">
+                        <div class="col-sm-4"><strong>Flask:</strong></div>
+                        <div class="col-sm-8" id="flaskVersion">Загрузка...</div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Информация о системе -->
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="bi bi-hdd"></i> Система
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-sm-4"><strong>ОС:</strong></div>
+                        <div class="col-sm-8" id="osInfo">Загрузка...</div>
+                    </div>
+                    <div class="row">
+                        <div class="col-sm-4"><strong>Платформа:</strong></div>
+                        <div class="col-sm-8" id="platform">Загрузка...</div>
+                    </div>
+                    <div class="row">
+                        <div class="col-sm-4"><strong>Время работы:</strong></div>
+                        <div class="col-sm-8" id="uptime">Загрузка...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Статус системы -->
+    <div class="row">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="bi bi-activity"></i> Статус системы
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-3">
+                            <div class="text-center">
+                                <div class="h4 text-success" id="systemStatus">✓</div>
+                                <div>Система</div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="text-center">
+                                <div class="h4 text-success" id="ffmpegStatus">✓</div>
+                                <div>FFmpeg</div>
+                                <div class="small text-muted" id="ffmpegVersion">-</div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="text-center">
+                                <div class="h4 text-success" id="workerStatus">✓</div>
+                                <div>Воркер</div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="text-center">
+                                <div class="h4 text-success" id="websocketStatus">✓</div>
+                                <div>WebSocket</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    loadSystemInfo();
+    
+    // Обновляем информацию каждые 5 секунд
+    setInterval(loadSystemInfo, 5000);
+});
+
+function loadSystemInfo() {
+    fetch('/api/system-info')
+        .then(response => response.json())
+        .then(data => {
+            // Процессор
+            document.getElementById('cpuCores').textContent = data.cpu_count || 'Неизвестно';
+            document.getElementById('cpuArch').textContent = data.cpu_arch || 'Неизвестно';
+            document.getElementById('cpuModel').textContent = data.cpu_model || 'Неизвестно';
+            
+            // Память
+            if (data.memory) {
+                document.getElementById('totalMemory').textContent = formatBytes(data.memory.total);
+                document.getElementById('availableMemory').textContent = formatBytes(data.memory.available);
+                
+                const usagePercent = ((data.memory.total - data.memory.available) / data.memory.total) * 100;
+                const progressBar = document.getElementById('memoryProgress');
+                progressBar.style.width = usagePercent + '%';
+                progressBar.textContent = Math.round(usagePercent) + '%';
+                
+                if (usagePercent > 90) {
+                    progressBar.classList.add('bg-danger');
+                } else if (usagePercent > 70) {
+                    progressBar.classList.add('bg-warning');
+                } else {
+                    progressBar.classList.add('bg-success');
+                }
+            }
+            
+            // Приложение
+            document.getElementById('appVersion').textContent = data.app_version || 'Неизвестно';
+            document.getElementById('environment').textContent = data.environment || 'Неизвестно';
+            document.getElementById('buildNumber').textContent = data.build_number || 'Неизвестно';
+            document.getElementById('pythonVersion').textContent = data.python_version || 'Неизвестно';
+            document.getElementById('flaskVersion').textContent = data.flask_version || 'Неизвестно';
+            
+            // Система
+            document.getElementById('osInfo').textContent = data.os_info || 'Неизвестно';
+            document.getElementById('platform').textContent = data.platform || 'Неизвестно';
+            document.getElementById('uptime').textContent = data.uptime || 'Неизвестно';
+            
+            // Статус
+            updateStatus('systemStatus', data.system_status);
+            updateStatus('ffmpegStatus', data.ffmpeg_status);
+            
+            // Версия FFmpeg
+            const ffmpegVersionElement = document.getElementById('ffmpegVersion');
+            if (ffmpegVersionElement && data.ffmpeg_version) {
+                ffmpegVersionElement.textContent = data.ffmpeg_version;
+            } else if (ffmpegVersionElement) {
+                ffmpegVersionElement.textContent = '-';
+            }
+            
+            updateStatus('workerStatus', data.worker_status);
+            updateStatus('websocketStatus', data.websocket_status);
+        })
+        .catch(error => {
+            console.error('Ошибка загрузки информации о системе:', error);
+        });
+}
+
+function formatBytes(bytes) {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+function updateStatus(elementId, status) {
+    const element = document.getElementById(elementId);
+    if (status === 'ok' || status === true) {
+        element.innerHTML = '✓';
+        element.className = 'h4 text-success';
+    } else {
+        element.innerHTML = '✗';
+        element.className = 'h4 text-danger';
+    }
+}
+</script>
+{% endblock %}

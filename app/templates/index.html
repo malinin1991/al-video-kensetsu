@@ -1,0 +1,940 @@
+{% extends "base.html" %}
+
+{% block title %}Загрузка и кодирование видео{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-upload"></i> Загрузка файлов
+                </h5>
+            </div>
+            <div class="card-body">
+                <form id="uploadForm" enctype="multipart/form-data">
+                    <div class="mb-3">
+                        <label class="form-label d-block">Источник файла</label>
+                        <div class="btn-group" role="group" aria-label="Источник файла">
+                            <input type="radio" class="btn-check" name="sourceMode" id="sourceModeDevice"
+                                   value="device" autocomplete="off" checked>
+                            <label class="btn btn-outline-primary" for="sourceModeDevice">
+                                <i class="bi bi-laptop"></i> С устройства
+                            </label>
+                            <input type="radio" class="btn-check" name="sourceMode" id="sourceModeStorage"
+                                   value="storage" autocomplete="off">
+                            <label class="btn btn-outline-primary" for="sourceModeStorage">
+                                <i class="bi bi-hdd-network"></i> С хранилища
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="mb-3" id="deviceSourceFields">
+                        <label for="fileInput" class="form-label">Выберите файлы</label>
+                        <input type="file" class="form-control" id="fileInput" name="file" 
+                               accept=".mp4,.mkv" multiple required>
+                        <div class="form-text">
+                            Поддерживаются файлы: .mp4, .mkv (можно выбрать несколько)
+                        </div>
+                    </div>
+
+                    <div class="mb-3" id="storageSourceFields" style="display: none;">
+                        <label for="storagePathInput" class="form-label">Путь к файлу на хранилище</label>
+                        <input type="text" class="form-control" id="storagePathInput" name="path"
+                               placeholder="/anilibria/Сериал/[08] Серия.mkv" autocomplete="off" spellcheck="false">
+                        <div class="form-text">
+                            Абсолютный путь <strong>внутри контейнера</strong>.
+                            Кавычки по краям необязательны — они снимаются автоматически.
+                            Пример: <code>/anilibria/...</code>
+                        </div>
+                    </div>
+                    
+                    <!-- Прогресс загрузки -->
+                    <div id="uploadProgress" class="job-progress mb-3" style="display: none;">
+                        <div class="progress-bar" role="progressbar" style="width: 0%"></div>
+                        <div class="progress-text">0.0%</div>
+                    </div>
+                    
+                    <!-- Общий прогресс загрузки (для нескольких файлов) -->
+                    <div id="totalUploadProgress" class="mb-3" style="display: none;">
+                        <div class="d-flex justify-content-between mb-1">
+                            <small class="text-muted">Общий прогресс загрузки</small>
+                            <small class="text-muted" id="totalUploadProgressText">0.0%</small>
+                        </div>
+                        <div class="progress" style="height: 20px;">
+                            <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                                 role="progressbar" id="totalUploadProgressBar" 
+                                 style="width: 0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+                        </div>
+                    </div>
+                    
+                    <button type="submit" class="btn btn-primary" id="uploadBtn">
+                        <i class="bi bi-upload"></i> Загрузить
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Настройки производительности -->
+        <div class="card mt-4">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-speedometer2"></i> Настройки производительности
+                    <button class="btn btn-sm btn-outline-secondary float-end" type="button" data-bs-toggle="collapse" 
+                            data-bs-target="#performanceSettings" aria-expanded="false" aria-controls="performanceSettings">
+                        <i class="bi bi-chevron-down" id="performanceToggleIcon"></i>
+                    </button>
+                </h5>
+            </div>
+            <div class="collapse" id="performanceSettings">
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label for="cpuThreads" class="form-label">Количество потоков CPU</label>
+                                <input type="number" class="form-control" id="cpuThreads" name="cpu_threads" 
+                                       value="0" min="0" max="64">
+                                <div class="form-help">0 = автоматически (FFmpeg сам выберет), или укажите количество потоков</div>
+                            </div>
+                            
+                        </div>
+                        
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label for="threadQueueSize" class="form-label">Размер очереди потоков</label>
+                                <input type="number" class="form-control" id="threadQueueSize" name="thread_queue_size" 
+                                       value="0" min="0" max="8192">
+                                <div class="form-help">0 = автоматически (FFmpeg сам выберет), или укажите размер буфера</div>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label for="x265Pools" class="form-label">Пул потоков x265</label>
+                                <input type="number" class="form-control" id="x265Pools" name="x265_pools" 
+                                       value="0" min="0" max="32">
+                                <div class="form-help">0 = автоматически, или количество пулов для x265</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-12">
+                            <div class="alert alert-info">
+                                <i class="bi bi-info-circle"></i>
+                                <strong>Рекомендации:</strong>
+                                <ul class="mb-0 mt-2">
+                                    <li>Значение 0 означает, что FFmpeg сам определит оптимальное количество потоков</li>
+                                    <li>Для старых процессоров: уменьшите количество потоков</li>
+                                    <li>При нехватке памяти: уменьшите размер очереди</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Обновление метаданных -->
+        <div class="card mt-4">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-tags"></i> Обновление метаданных
+                    <button class="btn btn-sm btn-outline-secondary float-end" type="button" data-bs-toggle="collapse"
+                            data-bs-target="#metadataSettings" aria-expanded="true" aria-controls="metadataSettings">
+                        <i class="bi bi-chevron-up" id="metadataToggleIcon"></i>
+                    </button>
+                </h5>
+            </div>
+            <div class="collapse show" id="metadataSettings">
+                <div class="card-body">
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" id="updateMetadata" name="update_metadata"
+                               value="true" checked>
+                        <label class="form-check-label" for="updateMetadata">
+                            Обновлять метаданные и флаги дорожек при кодировании
+                        </label>
+                    </div>
+
+                    <div class="mb-3" id="metadataNicknameContainer">
+                        <label for="metadataNickname" class="form-label">Ник для названия видеодорожки</label>
+                        <div class="input-group">
+                            <input type="text" class="form-control" id="metadataNickname" name="metadata_nickname"
+                                   value="{{ metadata_nickname_default }}" maxlength="64"
+                                   placeholder="Например: GeeKaZ0iD" autocomplete="username">
+                            <button class="btn btn-outline-primary" type="button" id="saveMetadataNicknameBtn">
+                                <i class="bi bi-save"></i> Сохранить
+                            </button>
+                        </div>
+                        <div class="form-help">
+                            Добавляется к названию <strong>видео</strong> всегда (если видео перекодируется)
+                            и к аудио «Original»/«Оригинал» при перекодировании аудио.
+                            Сохраняется в томе <code>settings</code> (<code>/app/settings/app_settings.json</code>) и переживает перезапуск.
+                            Можно буквы, цифры и спецсимволы; пустой ник тоже можно сохранить.
+                        </div>
+                        <div class="form-text" id="metadataNicknameSaveStatus" aria-live="polite"></div>
+                    </div>
+
+                    <div class="alert alert-secondary mb-0">
+                        <small>
+                            <strong>Правила:</strong>
+                            глобальные и служебные теги FFmpeg удаляются;
+                            единственное видео — default + forced;
+                            аудио «AniLiberty» — default + forced;
+                            аудио «Original»/«Оригинал» — язык оригинала;
+                            субтитры «Надписи» — default + forced, «Субтитры» — только включена.
+                        </small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Параметры FFmpeg -->
+        <div class="card mt-4">
+            <div class="card-header">
+                <div class="row align-items-center">
+                    <div class="col">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-gear"></i> Параметры кодирования
+                        </h5>
+                    </div>
+                    <div class="col-auto">
+                        <select class="form-select form-select-sm" id="presetSelect" style="width: auto;">
+                            <option value="default">По умолчанию</option>
+                        </select>
+                    </div>
+                    <div class="col-auto">
+                        <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" 
+                                data-bs-target="#encodingSettings" aria-expanded="false" aria-controls="encodingSettings">
+                            <i class="bi bi-chevron-down" id="encodingToggleIcon"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div class="collapse" id="encodingSettings">
+            <div class="card-body">
+                <form id="ffmpegForm">
+                    <input type="hidden" id="presetId" name="preset_id" value="default">
+                    <input type="hidden" id="presetModified" name="preset_modified" value="false">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label for="videoMap" class="form-label">Карта видео</label>
+                                <input type="text" class="form-control" id="videoMap" name="video_map" 
+                                       value="0:v:0" required>
+                                <div class="form-help">Указывает, какое видео выбрать из исходного файла</div>
+                            </div>
+                            
+                            <div class="mb-3" id="audioMapContainer">
+                                <label for="audioMap" class="form-label">Карта аудио</label>
+                                <input type="text" class="form-control" id="audioMap" name="audio_map" 
+                                       value="0:a?">
+                                <div class="form-help">Первая аудиодорожка исходного файла</div>
+                            </div>
+                            
+                            <div class="mb-3" id="subtitleMapContainer">
+                                <label for="subtitleMap" class="form-label">Карта субтитров</label>
+                                <input type="text" class="form-control" id="subtitleMap" name="subtitle_map" 
+                                       value="0:s?">
+                                <div class="form-help">Включает субтитры (если есть)</div>
+                            </div>
+                            
+                            <div class="mb-3" id="dataMapContainer">
+                                <label for="dataMap" class="form-label">Карта данных</label>
+                                <input type="text" class="form-control" id="dataMap" name="data_map" 
+                                       value="0:t?">
+                                <div class="form-help">Включает дополнительные потоки данных (например, главы)</div>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label for="videoCodec" class="form-label">Кодек видео</label>
+                                <select class="form-select" id="videoCodec" name="video_codec" required>
+                                    <option value="libx265" selected>H.265 (HEVC)</option>
+                                </select>
+                                <div class="form-help">Кодек видео — H.265 (HEVC)</div>
+                            </div>
+                        </div>
+                        
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label for="preset" class="form-label">Скорость кодирования</label>
+                                <select class="form-select" id="preset" name="preset" required>
+                                    <option value="ultrafast">ultrafast</option>
+                                    <option value="superfast">superfast</option>
+                                    <option value="veryfast">veryfast</option>
+                                    <option value="faster">faster</option>
+                                    <option value="fast">fast</option>
+                                    <option value="medium">medium</option>
+                                    <option value="slow" selected>slow</option>
+                                    <option value="slower">slower</option>
+                                    <option value="veryslow">veryslow</option>
+                                </select>
+                                <div class="form-help">Скорость кодирования: чем медленнее, тем выше качество</div>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label for="crf" class="form-label">Качество (CRF)</label>
+                                <input type="number" class="form-control" id="crf" name="crf" 
+                                       value="23" min="0" max="51" required>
+                                <div class="form-help">Качество (0 — без потерь, 51 — низкое). Оптимум ~23</div>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label for="pixelFormat" class="form-label">Формат пикселей</label>
+                                <select class="form-select" id="pixelFormat" name="pixel_format" required>
+                                    <option value="yuv420p">8-bit (yuv420p)</option>
+                                    <option value="yuv420p10le" selected>10-bit (yuv420p10le)</option>
+                                    <option value="yuv444p10le">10-bit 4:4:4 (yuv444p10le)</option>
+                                </select>
+                                <div class="form-help">Формат пикселей (битность цвета)</div>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label for="x265Params" class="form-label">Параметры x265</label>
+                                <input type="text" class="form-control" id="x265Params" name="x265_params"
+                                       value="level=5.1:ref=6" required>
+                                <div class="form-help">Дополнительные параметры кодека x265</div>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label for="tune" class="form-label">Оптимизация</label>
+                                <select class="form-select" id="tune" name="tune" required>
+                                    <option value="none">none (без tune)</option>
+                                    <option value="animation" selected>animation</option>
+                                    <option value="grain">grain</option>
+                                    <option value="psnr">psnr</option>
+                                    <option value="ssim">ssim</option>
+                                    <option value="fastdecode">fastdecode</option>
+                                    <option value="zerolatency">zerolatency</option>
+                                </select>
+                                <div class="form-help">Оптимизация для мультфильмов и анимации</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label for="subtitleCodec" class="form-label">Кодек субтитров</label>
+                                <select class="form-select" id="subtitleCodec" name="subtitle_codec">
+                                    <option value="copy" selected>Копировать</option>
+                                    <option value="ass">ASS</option>
+                                    <option value="srt">SRT</option>
+                                    <option value="remove">❌ Удалить</option>
+                                </select>
+                                <div class="form-help">Копирует субтитры без перекодирования</div>
+                            </div>
+                        </div>
+                        
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label for="dataCodec" class="form-label">Кодек данных</label>
+                                <select class="form-select" id="dataCodec" name="data_codec">
+                                    <option value="copy" selected>Копировать</option>
+                                    <option value="remove">❌ Удалить</option>
+                                </select>
+                                <div class="form-help">Копирует дополнительные потоки без перекодирования</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label for="audioCodec" class="form-label">Кодек аудио</label>
+                                <select class="form-select" id="audioCodec" name="audio_codec">
+                                    <option value="copy" selected>Копировать</option>
+                                    <option value="aac">AAC</option>
+                                    <option value="opus">Opus (160k VBR)</option>
+                                    <option value="remove">❌ Удалить</option>
+                                </select>
+                                <div class="form-help">Копирует аудио без сжатия</div>
+                            </div>
+                            
+                            <!-- Дополнительные настройки аудио (показываются только если кодек != copy) -->
+                            <div id="audioSettings" class="mb-3" style="display: none;">
+                                <div class="row">
+                                    <div class="col-md-6">
+                                        <label for="audioBitrate" class="form-label">Битрейт аудио</label>
+                                        <select class="form-select" id="audioBitrate" name="audio_bitrate">
+                                            <option value="64k">64 kbps</option>
+                                            <option value="96k">96 kbps</option>
+                                            <option value="128k">128 kbps</option>
+                                            <option value="160k" id="audioBitrate160k">160 kbps</option>
+                                            <option value="192k">192 kbps</option>
+                                            <option value="256k">256 kbps</option>
+                                            <option value="320k">320 kbps</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label for="audioSampleRate" class="form-label">Частота дискретизации</label>
+                                        <select class="form-select" id="audioSampleRate" name="audio_sample_rate">
+                                            <option value="22050">22050 Hz</option>
+                                            <option value="44100">44100 Hz</option>
+                                            <option value="48000" selected>48000 Hz</option>
+                                            <option value="96000">96000 Hz</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                
+                                <!-- VBR для Opus -->
+                                <div class="row mt-2" id="audioVbrContainer" style="display: none;">
+                                    <div class="col-md-6">
+                                        <div class="form-check">
+                                            <input class="form-check-input" type="checkbox" id="audioVbr" name="audio_vbr" value="true" checked>
+                                            <label class="form-check-label" for="audioVbr">
+                                                Переменный битрейт (VBR)
+                                            </label>
+                                            <div class="form-help">Рекомендуется для Opus</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label for="outputFormat" class="form-label">Формат вывода</label>
+                                <select class="form-select" id="outputFormat" name="output_format" required>
+                                    <option value="matroska" selected>Matroska (.mkv)</option>
+                                </select>
+                                <div class="form-help">Формат выходного файла — Matroska</div>
+                            </div>
+                        </div>
+                    </div>
+                </form>
+            </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-lg-4">
+        <!-- Статус заданий -->
+        <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-list-task"></i> Статус заданий
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="alert alert-info py-2 mb-3" role="note">
+                    <small>
+                        <i class="bi bi-info-circle"></i>
+                        Список заданий хранится в памяти и сбрасывается при перезапуске контейнера.
+                        Закодированные файлы на диске сохраняются.
+                    </small>
+                </div>
+                <div id="jobsContainer">
+                    <div class="text-center text-muted">
+                        <i class="bi bi-inbox"></i><br>
+                        Нет активных заданий
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/upload.js') }}"></script>
+<script src="{{ url_for('static', filename='js/logs.js') }}"></script>
+<script>
+// Обработка сворачивания блоков
+document.addEventListener('DOMContentLoaded', function() {
+    // Блок настроек производительности
+    const performanceToggle = document.getElementById('performanceSettings');
+    const performanceToggleIcon = document.getElementById('performanceToggleIcon');
+    
+    if (performanceToggle && performanceToggleIcon) {
+        performanceToggle.addEventListener('show.bs.collapse', function() {
+            performanceToggleIcon.classList.remove('bi-chevron-down');
+            performanceToggleIcon.classList.add('bi-chevron-up');
+        });
+        
+        performanceToggle.addEventListener('hide.bs.collapse', function() {
+            performanceToggleIcon.classList.remove('bi-chevron-up');
+            performanceToggleIcon.classList.add('bi-chevron-down');
+        });
+    }
+    
+    // Блок обновления метаданных
+    const metadataToggle = document.getElementById('metadataSettings');
+    const metadataToggleIcon = document.getElementById('metadataToggleIcon');
+
+    if (metadataToggle && metadataToggleIcon) {
+        metadataToggle.addEventListener('show.bs.collapse', function() {
+            metadataToggleIcon.classList.remove('bi-chevron-down');
+            metadataToggleIcon.classList.add('bi-chevron-up');
+        });
+
+        metadataToggle.addEventListener('hide.bs.collapse', function() {
+            metadataToggleIcon.classList.remove('bi-chevron-up');
+            metadataToggleIcon.classList.add('bi-chevron-down');
+        });
+    }
+
+    const updateMetadataCheckbox = document.getElementById('updateMetadata');
+    const metadataNicknameContainer = document.getElementById('metadataNicknameContainer');
+    if (updateMetadataCheckbox && metadataNicknameContainer) {
+        const syncMetadataFields = () => {
+            metadataNicknameContainer.style.display = updateMetadataCheckbox.checked ? 'block' : 'none';
+        };
+        updateMetadataCheckbox.addEventListener('change', syncMetadataFields);
+        syncMetadataFields();
+    }
+
+    const saveMetadataNicknameBtn = document.getElementById('saveMetadataNicknameBtn');
+    const metadataNicknameInput = document.getElementById('metadataNickname');
+    const metadataNicknameSaveStatus = document.getElementById('metadataNicknameSaveStatus');
+
+    function setNicknameSaveStatus(message, isError) {
+        if (!metadataNicknameSaveStatus) return;
+        metadataNicknameSaveStatus.textContent = message || '';
+        metadataNicknameSaveStatus.className = isError
+            ? 'form-text text-danger'
+            : 'form-text text-success';
+    }
+
+    async function loadSavedMetadataNickname() {
+        if (!metadataNicknameInput) return;
+        try {
+            const response = await fetch('/api/settings/metadata');
+            if (!response.ok) return;
+            const data = await response.json();
+            if (typeof data.metadata_nickname === 'string') {
+                metadataNicknameInput.value = data.metadata_nickname;
+            }
+        } catch (error) {
+            console.warn('Не удалось загрузить сохранённый ник:', error);
+        }
+    }
+
+    async function saveMetadataNickname() {
+        if (!metadataNicknameInput) return;
+        const nickname = metadataNicknameInput.value.trim();
+        if (saveMetadataNicknameBtn) {
+            saveMetadataNicknameBtn.disabled = true;
+        }
+        setNicknameSaveStatus('Сохранение…', false);
+        try {
+            const response = await fetch('/api/settings/metadata', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ metadata_nickname: nickname }),
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(result.error || `Ошибка сохранения (${response.status})`);
+            }
+            metadataNicknameInput.value = result.metadata_nickname || '';
+            setNicknameSaveStatus(
+                nickname ? `Сохранено: ${result.metadata_nickname}` : 'Ник очищен и сохранён',
+                false
+            );
+        } catch (error) {
+            console.error('Ошибка сохранения ника:', error);
+            setNicknameSaveStatus(error.message || 'Не удалось сохранить ник', true);
+        } finally {
+            if (saveMetadataNicknameBtn) {
+                saveMetadataNicknameBtn.disabled = false;
+            }
+        }
+    }
+
+    if (saveMetadataNicknameBtn) {
+        saveMetadataNicknameBtn.addEventListener('click', saveMetadataNickname);
+    }
+    if (metadataNicknameInput) {
+        metadataNicknameInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                saveMetadataNickname();
+            }
+        });
+    }
+
+    loadSavedMetadataNickname();
+
+    // Блок параметров кодирования
+    const encodingToggle = document.getElementById('encodingSettings');
+    const encodingToggleIcon = document.getElementById('encodingToggleIcon');
+    
+    if (encodingToggle && encodingToggleIcon) {
+        encodingToggle.addEventListener('show.bs.collapse', function() {
+            encodingToggleIcon.classList.remove('bi-chevron-down');
+            encodingToggleIcon.classList.add('bi-chevron-up');
+        });
+        
+        encodingToggle.addEventListener('hide.bs.collapse', function() {
+            encodingToggleIcon.classList.remove('bi-chevron-up');
+            encodingToggleIcon.classList.add('bi-chevron-down');
+        });
+    }
+    
+    // Загружаем пресеты после загрузки DOM
+    setTimeout(() => {
+        // Проверяем, что элемент существует перед загрузкой
+        const presetSelect = document.getElementById('presetSelect');
+        if (presetSelect) {
+            loadPresets();
+        }
+    }, 100);
+    
+    // Обработчик изменения пресета
+    const presetSelect = document.getElementById('presetSelect');
+    if (presetSelect) {
+        presetSelect.addEventListener('change', function() {
+            loadPresetSettings(this.value);
+        });
+    }
+    
+    // Обработчик изменения аудио кодека
+    const audioCodecSelect = document.getElementById('audioCodec');
+    if (audioCodecSelect) {
+        audioCodecSelect.addEventListener('change', function() {
+            toggleAudioSettings(this.value);
+            toggleTrackSettings('audio', this.value);
+            toggleVbrOption(this.value);
+        });
+    }
+    
+    // Обработчик изменения кодека субтитров
+    const subtitleCodecSelect = document.getElementById('subtitleCodec');
+    if (subtitleCodecSelect) {
+        subtitleCodecSelect.addEventListener('change', function() {
+            toggleTrackSettings('subtitle', this.value);
+        });
+    }
+    
+    // Обработчик изменения кодека данных
+    const dataCodecSelect = document.getElementById('dataCodec');
+    if (dataCodecSelect) {
+        dataCodecSelect.addEventListener('change', function() {
+            toggleTrackSettings('data', this.value);
+        });
+    }
+    
+    // Получаем информацию о системе
+    fetch('/api/system-info')
+        .then(response => response.json())
+        .then(data => {
+            if (data.cpu_count) {
+                const cpuThreadsInput = document.getElementById('cpuThreads');
+                const x265PoolsInput = document.getElementById('x265Pools');
+                
+                if (cpuThreadsInput) {
+                    cpuThreadsInput.max = Math.min(data.cpu_count, 64);
+                    cpuThreadsInput.placeholder = `Авто (0), макс. ${cpuThreadsInput.max} ядер`;
+                }
+                
+                if (x265PoolsInput) {
+                    x265PoolsInput.max = Math.min(data.cpu_count, 32);
+                    x265PoolsInput.placeholder = `Авто (0), макс. ${x265PoolsInput.max} пулов`;
+                }
+            }
+        })
+        .catch(error => {
+            console.log('Не удалось получить информацию о системе:', error);
+        });
+
+    // Отслеживание ручных изменений параметров кодирования
+    setupPresetModifiedTracking();
+});
+
+function setupPresetModifiedTracking() {
+    const ffmpegForm = document.getElementById('ffmpegForm');
+    if (!ffmpegForm) return;
+
+    const markModified = () => {
+        const presetModified = document.getElementById('presetModified');
+        if (presetModified) {
+            presetModified.value = 'true';
+        }
+    };
+
+    ffmpegForm.querySelectorAll('input, select, textarea').forEach(element => {
+        if (element.id === 'presetId' || element.id === 'presetModified') return;
+        element.addEventListener('change', markModified);
+        element.addEventListener('input', markModified);
+    });
+}
+
+// Функции для работы с пресетами
+function loadPresets() {
+    // Проверяем, не загружены ли уже пресеты
+    const presetSelect = document.getElementById('presetSelect');
+    if (!presetSelect) {
+        return;
+    }
+    
+    if (presetSelect.children.length > 1) {
+        return;
+    }
+    
+    fetch('/api/presets')
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            return response.json();
+        })
+        .then(presets => {
+            const presetSelect = document.getElementById('presetSelect');
+            if (presetSelect) {
+                // Очищаем только если есть пресеты для загрузки
+                if (presets && presets.length > 0) {
+                    presetSelect.innerHTML = '';
+                    
+                    // Сортируем пресеты: "По умолчанию" всегда первый
+                    const sortedPresets = presets.sort((a, b) => {
+                        if (a.id === 'default') return -1;
+                        if (b.id === 'default') return 1;
+                        return a.name.localeCompare(b.name);
+                    });
+                    
+                    sortedPresets.forEach((preset, index) => {
+                        const option = document.createElement('option');
+                        option.value = preset.id;
+                        option.textContent = preset.name;
+                        presetSelect.appendChild(option);
+                        
+                        // Заполняем глобальный кеш пресетов для использования в других местах
+                        if (window.presetsCache) {
+                            window.presetsCache[preset.id] = preset.name;
+                        }
+                    });
+
+                    loadPresetSettings('default');
+                }
+            }
+        })
+        .catch(error => {
+            console.error('Ошибка загрузки пресетов:', error);
+            // Показываем сообщение об ошибке пользователю
+            showAlert('warning', 'Ошибка загрузки пресетов: ' + error.message);
+            const presetSelect = document.getElementById('presetSelect');
+            if (presetSelect) {
+                // Добавляем опцию об ошибке, но не очищаем существующие
+                const errorOption = document.createElement('option');
+                errorOption.value = 'default';
+                errorOption.textContent = 'По умолчанию (ошибка загрузки)';
+                errorOption.selected = true;
+                presetSelect.appendChild(errorOption);
+            }
+        });
+}
+
+function loadPresetSettings(presetId) {
+    fetch(`/api/presets/${presetId}`)
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            return response.json();
+        })
+        .then(preset => {
+            if (preset) {
+                applyPresetSettings(preset);
+            }
+        })
+        .catch(error => {
+            console.error('Ошибка загрузки пресета:', error);
+            showAlert('danger', 'Ошибка загрузки пресета: ' + error.message);
+        });
+}
+
+const PRESET_FIELD_MAP = {
+    video_codec: 'videoCodec',
+    preset: 'preset',
+    crf: 'crf',
+    pixel_format: 'pixelFormat',
+    x265_params: 'x265Params',
+    tune: 'tune',
+    video_map: 'videoMap',
+    audio_map: 'audioMap',
+    subtitle_map: 'subtitleMap',
+    data_map: 'dataMap',
+    subtitle_codec: 'subtitleCodec',
+    data_codec: 'dataCodec',
+    output_format: 'outputFormat'
+};
+
+function setFormField(elementId, value) {
+    const element = document.getElementById(elementId);
+    if (!element) return;
+    if (value === null || value === undefined || value === '') return;
+    element.value = value;
+}
+
+function applyPresetSettings(preset) {
+    console.log('Применяем пресет:', preset.id, preset.name);
+
+    const presetIdField = document.getElementById('presetId');
+    if (presetIdField) {
+        presetIdField.value = preset.id;
+    }
+
+    const presetModified = document.getElementById('presetModified');
+    if (presetModified) {
+        presetModified.value = 'false';
+    }
+
+    Object.entries(PRESET_FIELD_MAP).forEach(([presetKey, elementId]) => {
+        if (preset[presetKey] !== null && preset[presetKey] !== undefined && preset[presetKey] !== '') {
+            setFormField(elementId, preset[presetKey]);
+        }
+    });
+
+    if (preset.audio_settings) {
+        const audioCodec = document.getElementById('audioCodec');
+        if (audioCodec) {
+            let codecValue = preset.audio_settings.codec;
+            if (codecValue === 'libopus') {
+                codecValue = 'opus';
+            } else if (codecValue === null || codecValue === undefined) {
+                codecValue = 'remove';
+            } else if (codecValue === '') {
+                codecValue = 'copy';
+            }
+            audioCodec.value = codecValue;
+            toggleAudioSettings(codecValue);
+            toggleTrackSettings('audio', codecValue);
+            toggleVbrOption(codecValue);
+        }
+
+        if (preset.audio_settings.bitrate) {
+            setFormField('audioBitrate', preset.audio_settings.bitrate);
+        }
+
+        if (preset.audio_settings.sample_rate) {
+            setFormField('audioSampleRate', preset.audio_settings.sample_rate);
+        }
+
+        if (preset.audio_settings.codec === 'opus' || preset.audio_settings.codec === 'libopus') {
+            toggleVbrOption('opus');
+            const audioVbr = document.getElementById('audioVbr');
+            if (audioVbr && preset.audio_settings.vbr !== undefined) {
+                audioVbr.checked = preset.audio_settings.vbr === true || preset.audio_settings.vbr === 'true';
+            }
+        }
+    }
+
+    if (preset.subtitle_codec !== undefined) {
+        const codecValue = preset.subtitle_codec || 'remove';
+        setFormField('subtitleCodec', codecValue);
+        toggleTrackSettings('subtitle', codecValue);
+    }
+
+    if (preset.data_codec !== undefined) {
+        const codecValue = preset.data_codec || 'remove';
+        setFormField('dataCodec', codecValue);
+        toggleTrackSettings('data', codecValue);
+    }
+
+    if (preset.audio_map === null || preset.audio_map === '') {
+        const audioCodec = document.getElementById('audioCodec');
+        if (audioCodec) {
+            audioCodec.value = 'remove';
+            toggleTrackSettings('audio', 'remove');
+        }
+    } else {
+        setFormField('audioMap', preset.audio_map);
+    }
+
+    if (preset.subtitle_map === null || preset.subtitle_map === '') {
+        const subtitleCodec = document.getElementById('subtitleCodec');
+        if (subtitleCodec) {
+            subtitleCodec.value = 'remove';
+            toggleTrackSettings('subtitle', 'remove');
+        }
+    } else {
+        setFormField('subtitleMap', preset.subtitle_map);
+    }
+
+    if (preset.data_map === null || preset.data_map === '') {
+        const dataCodec = document.getElementById('dataCodec');
+        if (dataCodec) {
+            dataCodec.value = 'remove';
+            toggleTrackSettings('data', 'remove');
+        }
+    } else {
+        setFormField('dataMap', preset.data_map);
+    }
+}
+
+function resetToDefaultSettings() {
+    loadPresetSettings('default');
+}
+
+function toggleAudioSettings(audioCodec) {
+    const audioSettings = document.getElementById('audioSettings');
+    if (audioSettings) {
+        if (audioCodec === 'copy' || audioCodec === 'remove') {
+            audioSettings.style.display = 'none';
+        } else {
+            audioSettings.style.display = 'block';
+            
+            // Устанавливаем 160k по умолчанию для Opus
+            if (audioCodec === 'opus' || audioCodec === 'libopus') {
+                const audioBitrate = document.getElementById('audioBitrate');
+                if (audioBitrate && audioBitrate.value === '128k') {
+                    audioBitrate.value = '160k';
+                }
+            }
+        }
+    }
+}
+
+function toggleVbrOption(audioCodec) {
+    const audioVbrContainer = document.getElementById('audioVbrContainer');
+    if (audioVbrContainer) {
+        if (audioCodec === 'opus' || audioCodec === 'libopus') {
+            audioVbrContainer.style.display = 'block';
+        } else {
+            audioVbrContainer.style.display = 'none';
+        }
+    }
+}
+
+function toggleTrackSettings(trackType, codecValue) {
+    // Скрывает/показывает поля карты дорожек в зависимости от выбранного кодека
+    let mapContainerId, mapInputId, defaultValue;
+    
+    switch(trackType) {
+        case 'audio':
+            mapContainerId = 'audioMapContainer';
+            mapInputId = 'audioMap';
+            defaultValue = '0:a?';
+            break;
+        case 'subtitle':
+            mapContainerId = 'subtitleMapContainer';
+            mapInputId = 'subtitleMap';
+            defaultValue = '0:s?';
+            break;
+        case 'data':
+            mapContainerId = 'dataMapContainer';
+            mapInputId = 'dataMap';
+            defaultValue = '0:t?';
+            break;
+        default:
+            return;
+    }
+    
+    const mapContainer = document.getElementById(mapContainerId);
+    const mapInput = document.getElementById(mapInputId);
+    
+    if (mapContainer && mapInput) {
+        if (codecValue === 'remove') {
+            // Скрываем поле карты и очищаем его значение
+            mapContainer.style.display = 'none';
+            mapInput.value = '';
+        } else {
+            // Показываем поле карты и восстанавливаем значение по умолчанию
+            mapContainer.style.display = 'block';
+            if (!mapInput.value) {
+                mapInput.value = defaultValue;
+            }
+        }
+    }
+}
+</script>
+{% endblock %}

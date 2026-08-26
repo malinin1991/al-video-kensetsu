@@ -1,0 +1,59 @@
+services:
+  video-encoder:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        BUILD_TIME: ${BUILD_TIME:-unknown}
+        GIT_SHA: ${GIT_SHA:-unknown}
+    ports:
+      - "3000:5000"
+    volumes:
+      - uploads:/app/uploads
+      # Хранилище исходников для внутреннего режима (раскомментируйте):
+      # - /mnt/user/anilibria:/anilibria:ro
+      - outputs:/app/outputs
+      - logs:/app/logs
+      - settings:/app/settings
+      - data:/app/data
+      - ffmpeg_bin:/app/ffmpeg
+      # Свои ffmpeg/ffprobe: положите bin/ffmpeg и bin/ffprobe и раскомментируйте:
+      # - /mnt/user/appdata/al-web-video-encoder/ffmpeg:/app/ffmpeg
+      - ./presets:/app/presets
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    environment:
+      - FLASK_ENV=production
+      - PYTHONPATH=/app
+      - FLASK_DEBUG=0
+      - FFMPEG_DIR=/app/ffmpeg
+      # Опционально, если mkvmerge не в PATH: MKVMERGE_BIN=/usr/bin/mkvmerge
+      - FFMPEG_THREAD_QUEUE_SIZE=1024
+      - LOG_LEVEL=WARNING
+      - CONSOLE_LOG_LEVEL=WARNING
+      - MEMORY_LOG_LEVEL=INFO
+      - TZ=Asia/Novosibirsk
+      - CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http://172.18.0.1:3000,http://*.mageek.su:3000,http://*.local:3000
+      - SOCKETIO_ASYNC_MODE=threading
+      - INTERNAL_SOURCE_ROOTS=/anilibria
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+        reservations:
+          memory: 4G
+
+volumes:
+  uploads:
+  outputs:
+  logs:
+  settings:
+  data:
+  ffmpeg_bin:

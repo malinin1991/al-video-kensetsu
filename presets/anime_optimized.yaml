@@ -1,0 +1,23 @@
+id: anime_optimized
+name: Оптимизация для аниме
+description: Специальные настройки для аниме и мультфильмов
+
+video_codec: libx265
+preset: medium
+crf: 20
+pixel_format: yuv420p10le
+x265_params: level=5.1:ref=4:aq-mode=1:aq-strength=0.8:psy-rd=0.4:psy-rdoq=1.0
+tune: animation
+
+audio_settings:
+  codec: opus
+  bitrate: 160k
+  sample_rate: 48000
+
+output_format: matroska
+video_map: 0:v:0
+audio_map: 0:a?
+subtitle_map: 0:s?
+data_map: 0:t?
+subtitle_codec: copy
+data_codec: copy

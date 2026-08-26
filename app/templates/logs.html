@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+
+{% block title %}Логи системы{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+                    <h5 class="card-title mb-0">
+                        <i class="bi bi-journal-text"></i> Логи системы
+                    </h5>
+                    <div class="d-flex flex-wrap align-items-center gap-2">
+                        <ul class="nav nav-pills log-stream-tabs mb-0" id="logStreamTabs" role="tablist">
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link active" id="systemTabBtn" type="button"
+                                        data-stream="system" role="tab">
+                                    <i class="bi bi-gear"></i> Системный
+                                </button>
+                            </li>
+                            <li class="nav-item" role="presentation">
+                                <button class="nav-link" id="jobTabBtn" type="button"
+                                        data-stream="job" role="tab">
+                                    <i class="bi bi-list-task"></i> По заданию
+                                </button>
+                            </li>
+                        </ul>
+                        <select class="form-select form-select-sm log-job-select" id="jobLogSelect"
+                                style="min-width: 320px; display: none;" aria-label="Выбор задания">
+                            <option value="">Выберите задание...</option>
+                        </select>
+                        <button class="btn btn-outline-warning btn-sm" id="pauseLogsBtn">
+                            <i class="bi bi-pause-fill"></i> Пауза
+                        </button>
+                        <button class="btn btn-outline-secondary btn-sm" id="clearLogsBtn">
+                            <i class="bi bi-trash"></i> Очистить
+                        </button>
+                        <button class="btn btn-outline-primary btn-sm" id="refreshLogsBtn">
+                            <i class="bi bi-arrow-clockwise"></i> Обновить
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div class="card-body p-0">
+                <div class="alert alert-info py-2 mx-3 mt-3 mb-0" role="note">
+                    <small>
+                        <i class="bi bi-info-circle"></i>
+                        In-memory логи сбрасываются при перезапуске контейнера. Файловые логи в <code>/app/logs</code> сохраняются.
+                    </small>
+                </div>
+                <div id="logsContainer" class="log-container">
+                    <div class="text-center text-muted p-3">
+                        <i class="bi bi-hourglass-split"></i><br>
+                        Ожидание логов...
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+                    <h5 class="card-title mb-0">
+                        <i class="bi bi-list-task"></i> Все задания
+                    </h5>
+                    <small class="text-muted" id="browserTzHint" title="Время в таблице и логах — по часовому поясу браузера"></small>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover jobs-table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Файл</th>
+                                <th>Статус</th>
+                                <th>Прогресс</th>
+                                <th>Создано</th>
+                                <th>Действия</th>
+                            </tr>
+                        </thead>
+                        <tbody id="jobsTableBody">
+                            <tr>
+                                <td colspan="6" class="text-center text-muted">
+                                    <i class="bi bi-inbox"></i><br>
+                                    Нет заданий
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/logs.js') }}"></script>
+{% endblock %}

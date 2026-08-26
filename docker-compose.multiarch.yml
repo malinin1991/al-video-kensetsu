@@ -1,0 +1,48 @@
+services:
+  video-encoder:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        BUILD_TIME: ${BUILD_TIME:-unknown}
+        GIT_SHA: ${GIT_SHA:-unknown}
+      platforms:
+        - linux/amd64
+        - linux/arm64/v8
+    ports:
+      - "3000:5000"
+    volumes:
+      - uploads:/app/uploads
+      - outputs:/app/outputs
+      - logs:/app/logs
+      - settings:/app/settings
+      - ffmpeg_bin:/app/ffmpeg
+      # Свои ffmpeg/ffprobe: положите bin/ffmpeg и bin/ffprobe и раскомментируйте:
+      # - /mnt/user/appdata/al-web-video-encoder/ffmpeg:/app/ffmpeg
+      - ./presets:/app/presets
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    environment:
+      - FLASK_ENV=production
+      - PYTHONPATH=/app
+      - FFMPEG_DIR=/app/ffmpeg
+      - FFMPEG_THREAD_QUEUE_SIZE=1024
+      - LOG_LEVEL=INFO
+      - CONSOLE_LOG_LEVEL=INFO
+      - TZ=Asia/Novosibirsk
+      - CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http://172.18.0.1:3000,http://pc13.local:3000,http://*.local:3000
+      - SOCKETIO_ASYNC_MODE=threading
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+volumes:
+  uploads:
+  outputs:
+  logs:
+  settings:
+  ffmpeg_bin:

@@ -1,0 +1,75 @@
+"""Тесты персистентного хранения ника."""
+
+from __future__ import annotations
+
+import os
+
+import pytest
+
+import app.settings_store as settings_store
+
+
+@pytest.fixture
+def settings_file(tmp_path, monkeypatch):
+    path = tmp_path / 'app_settings.json'
+    monkeypatch.setenv('APP_SETTINGS_PATH', str(path))
+    monkeypatch.delenv('METADATA_NICKNAME', raising=False)
+    return path
+
+
+class TestSettingsStore:
+    def test_env_fallback_when_no_file(self, settings_file, monkeypatch):
+        monkeypatch.setenv('METADATA_NICKNAME', 'FromEnv')
+        assert not settings_file.exists()
+        assert settings_store.get_metadata_nickname() == 'FromEnv'
+        assert settings_store.has_saved_nickname() is False
+
+    def test_saved_empty_overrides_env(self, settings_file, monkeypatch):
+        monkeypatch.setenv('METADATA_NICKNAME', 'FromEnv')
+        settings_store.save_settings({'metadata_nickname': ''})
+        assert settings_store.has_saved_nickname() is True
+        assert settings_store.get_metadata_nickname() == ''
+        assert settings_file.exists()
+
+    def test_saved_nickname_persists(self, settings_file):
+        settings_store.save_settings({'metadata_nickname': 'GeeKaZ0iD'})
+        assert settings_store.get_metadata_nickname() == 'GeeKaZ0iD'
+        # повторная загрузка
+        assert settings_store.load_settings()['metadata_nickname'] == 'GeeKaZ0iD'
+
+    def test_atomic_write(self, settings_file):
+        settings_store.save_settings({'metadata_nickname': 'A'})
+        settings_store.save_settings({'metadata_nickname': 'B'})
+        assert settings_file.read_text(encoding='utf-8')
+        assert settings_store.get_metadata_nickname() == 'B'
+        assert not os.path.exists(str(settings_file) + '.tmp')
+
+    def test_legacy_logs_migration(self, tmp_path, monkeypatch):
+        """Читает ник из старого /app/logs, если нового файла ещё нет."""
+        new_path = tmp_path / 'settings' / 'app_settings.json'
+        legacy_dir = tmp_path / 'logs'
+        legacy_dir.mkdir()
+        legacy_path = legacy_dir / 'app_settings.json'
+        legacy_path.write_text(
+            '{"metadata_nickname": "LegacyNick"}\n',
+            encoding='utf-8',
+        )
+        monkeypatch.setenv('APP_SETTINGS_PATH', str(new_path))
+        monkeypatch.setattr(
+            settings_store,
+            '_LEGACY_SETTINGS_PATHS',
+            (str(legacy_path),),
+        )
+        monkeypatch.delenv('METADATA_NICKNAME', raising=False)
+        # APP_SETTINGS_PATH задан — миграция legacy отключена по коду;
+        # проверяем чтение через пустой APP_SETTINGS_PATH + подмену default
+        monkeypatch.delenv('APP_SETTINGS_PATH', raising=False)
+        monkeypatch.setattr(
+            settings_store,
+            '_DEFAULT_SETTINGS_PATH',
+            str(new_path),
+        )
+        assert settings_store.get_metadata_nickname() == 'LegacyNick'
+        settings_store.save_settings({'metadata_nickname': 'LegacyNick'})
+        assert new_path.exists()
+        assert settings_store.get_metadata_nickname() == 'LegacyNick'

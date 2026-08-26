@@ -1,0 +1,62 @@
+# Makefile для Windows (используйте с Git Bash или WSL)
+
+.PHONY: help build up down logs clean restart test
+
+# Переменные
+COMPOSE_FILE = docker-compose.windows.yml
+SERVICE_NAME = video-encoder
+
+help: ## Показать справку
+	@echo "Доступные команды:"
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
+
+build: ## Собрать образ
+	docker compose -f $(COMPOSE_FILE) build
+
+up: ## Запустить приложение
+	docker compose -f $(COMPOSE_FILE) up -d
+
+up-build: ## Запустить с пересборкой
+	docker compose -f $(COMPOSE_FILE) up --build -d
+
+down: ## Остановить приложение
+	docker compose -f $(COMPOSE_FILE) down
+
+down-volumes: ## Остановить и удалить данные
+	docker compose -f $(COMPOSE_FILE) down -v
+
+logs: ## Показать логи
+	docker compose -f $(COMPOSE_FILE) logs -f
+
+logs-app: ## Показать логи приложения
+	docker compose -f $(COMPOSE_FILE) logs -f $(SERVICE_NAME)
+
+restart: ## Перезапустить приложение
+	docker compose -f $(COMPOSE_FILE) restart
+
+clean: ## Очистить все (контейнеры, образы, volumes)
+	docker compose -f $(COMPOSE_FILE) down -v --rmi all
+	docker system prune -f
+
+test: ## Запустить тесты
+	docker compose -f $(COMPOSE_FILE) exec $(SERVICE_NAME) python -m pytest
+
+shell: ## Войти в контейнер
+	docker compose -f $(COMPOSE_FILE) exec $(SERVICE_NAME) /bin/bash
+
+status: ## Показать статус
+	docker compose -f $(COMPOSE_FILE) ps
+
+# Команды для разработки
+dev: ## Запустить в режиме разработки
+	docker compose -f docker-compose.dev.yml up --build
+
+prod: ## Запустить в продакшн режиме
+	docker compose -f docker-compose.prod.yml up --build -d
+
+registry-push: ## Собрать и опубликовать образ в registry
+	powershell -ExecutionPolicy Bypass -File scripts/build-and-push.ps1
+
+registry-pull: ## Скачать образ из registry и запустить (Windows)
+	docker compose --env-file registry.env -f docker-compose.registry.windows.yml pull
+	docker compose --env-file registry.env -f docker-compose.registry.windows.yml up -d

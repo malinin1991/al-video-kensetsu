@@ -1,0 +1,161 @@
+/* ========================================
+   ТЕМНАЯ ТЕМА
+   ======================================== */
+
+/* Базовые переменные для тёмной темы */
+[data-bs-theme="dark"], .dark-theme {
+    --bs-body-bg: #212529;
+    --bs-body-color: #ffffff;
+}
+
+/* Применяем тёмную тему к html элементу */
+html[data-bs-theme="dark"], html.dark-theme {
+    background-color: #212529;
+    color: #ffffff;
+}
+
+/* Карточки */
+[data-bs-theme="dark"] .card,
+.dark-theme .card {
+    background-color: #343a40;
+    border-color: #495057;
+    color: #ffffff;
+}
+
+/* Формы */
+[data-bs-theme="dark"] .form-control,
+.dark-theme .form-control {
+    background-color: #343a40;
+    border-color: #6c757d;
+    color: #ffffff;
+}
+
+[data-bs-theme="dark"] .form-control:focus,
+.dark-theme .form-control:focus {
+    background-color: #343a40;
+    border-color: #0d6efd;
+    color: #ffffff;
+    box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
+}
+
+[data-bs-theme="dark"] .form-select,
+.dark-theme .form-select {
+    background-color: #343a40;
+    border-color: #6c757d;
+    color: #ffffff;
+}
+
+[data-bs-theme="dark"] .form-select:focus,
+.dark-theme .form-select:focus {
+    background-color: #343a40;
+    border-color: #0d6efd;
+    color: #ffffff;
+    box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
+}
+
+/* Навигация */
+[data-bs-theme="dark"] .navbar,
+.dark-theme .navbar {
+    background-color: #212529 !important;
+}
+
+/* Контейнеры логов */
+[data-bs-theme="dark"] .log-container,
+.dark-theme .log-container {
+    background-color: #343a40;
+    border-color: #495057;
+    color: #ffffff;
+    height: 400px; /* Фиксированная высота */
+    resize: vertical; /* Позволяет изменять высоту вертикально */
+}
+
+[data-bs-theme="dark"] .log-entry,
+.dark-theme .log-entry {
+    border-bottom-color: #495057;
+}
+
+/* Алерты */
+[data-bs-theme="dark"] .alert-info,
+.dark-theme .alert-info {
+    background-color: rgba(13, 202, 240, 0.1);
+    border-color: rgba(13, 202, 240, 0.2);
+    color: #0dcaf0;
+}
+
+/* Текст */
+[data-bs-theme="dark"] .text-muted,
+.dark-theme .text-muted {
+    color: #adb5bd !important;
+}
+
+[data-bs-theme="dark"] .form-help,
+.dark-theme .form-help {
+    color: #adb5bd;
+}
+
+/* Кнопки */
+[data-bs-theme="dark"] .btn-outline-light,
+.dark-theme .btn-outline-light {
+    border-color: #6c757d;
+    color: #ffffff;
+}
+
+[data-bs-theme="dark"] .btn-outline-light:hover,
+.dark-theme .btn-outline-light:hover {
+    background-color: #6c757d;
+    border-color: #6c757d;
+    color: #000000;
+}
+
+/* ПРОГРЕСС-БАРЫ - ИСПРАВЛЕНИЕ */
+[data-bs-theme="dark"] .progress,
+.dark-theme .progress {
+    background-color: #495057;
+    border: 1px solid #6c757d;
+}
+
+[data-bs-theme="dark"] .progress-bar,
+.dark-theme .progress-bar {
+    background-color: #0d6efd;
+    color: #ffffff;
+    font-weight: bold;
+    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+[data-bs-theme="dark"] .progress-bar-striped,
+.dark-theme .progress-bar-striped {
+    background-image: linear-gradient(45deg, rgba(255, 255, 255, 0.15) 25%, transparent 25%, transparent 50%, rgba(255, 255, 255, 0.15) 50%, rgba(255, 255, 255, 0.15) 75%, transparent 75%, transparent);
+}
+
+[data-bs-theme="dark"] .progress-bar-animated,
+.dark-theme .progress-bar-animated {
+    animation: progress-bar-stripes 1s linear infinite;
+}
+
+/* Анимация для полосок прогресс-бара */
+@keyframes progress-bar-stripes {
+    0% {
+        background-position-x: 1rem;
+    }
+}
+
+/* Специальные стили для прогресс-баров в заданиях */
+[data-bs-theme="dark"] .job-progress,
+.dark-theme .job-progress {
+    background-color: #495057;
+    border: 1px solid #6c757d;
+    border-radius: 0.375rem;
+}
+
+[data-bs-theme="dark"] .job-progress .progress-bar,
+.dark-theme .job-progress .progress-bar {
+    background-color: #198754;
+    color: #ffffff;
+    font-weight: bold;
+    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+/* Анимация переключения темы */
+* {
+    transition: background-color 0.3s ease, border-color 0.3s ease, color 0.3s ease;
+}

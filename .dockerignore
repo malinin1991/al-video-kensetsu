@@ -1,0 +1,35 @@
+# Git и IDE
+.git
+.gitignore
+.idea
+.vscode
+
+# Python
+__pycache__
+*.py[cod]
+.venv
+venv
+env
+
+# Данные и логи
+uploads/
+outputs/
+logs/
+data/
+*.log
+
+# Env-файлы (секреты не попадают в образ)
+.env
+.env.*
+!registry.example.env
+!config.example.env
+
+# Документация и вспомогательные файлы
+*.md
+test.txt
+
+# Docker Compose (не нужны в контексте сборки)
+docker-compose*.yml
+
+# Скрипты публикации
+scripts/

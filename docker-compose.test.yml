@@ -1,0 +1,39 @@
+services:
+  video-encoder:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    ports:
+      - "5001:5000"  # Другой порт для тестирования
+    volumes:
+      - test_uploads:/app/uploads
+      - test_outputs:/app/outputs
+      - test_logs:/app/logs
+      - test_settings:/app/settings
+      - test_ffmpeg:/app/ffmpeg
+      - ./presets:/app/presets
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    environment:
+      - FLASK_ENV=testing
+      - PYTHONPATH=/app
+      - FLASK_DEBUG=1
+      - FFMPEG_DIR=/app/ffmpeg
+      - FFMPEG_THREAD_QUEUE_SIZE=1024
+      - TZ=Europe/Moscow
+      - CORS_ORIGINS=http://localhost:5001,http://127.0.0.1:5001,http://172.18.0.1:5001,http://pc13.local:5001,http://*.local:5001
+      - SOCKETIO_ASYNC_MODE=threading
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+
+volumes:
+  test_uploads:
+  test_outputs:
+  test_logs:
+  test_settings:
+  test_ffmpeg:

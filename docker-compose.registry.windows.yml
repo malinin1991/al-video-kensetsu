@@ -1,0 +1,60 @@
+# Запуск образа из registry на Windows (без Linux-монтирований /etc/localtime)
+#
+#   copy registry.example.env registry.env
+#   docker login registry.example.com
+#   docker compose --env-file registry.env -f docker-compose.registry.windows.yml pull
+#   docker compose --env-file registry.env -f docker-compose.registry.windows.yml up -d
+
+services:
+  video-encoder:
+    image: ${REGISTRY:-registry.example.com}/${IMAGE_NAME:-al-web-video-encoder}:${IMAGE_TAG:-latest}
+    pull_policy: always
+    ports:
+      - "3000:5000"
+    volumes:
+      - uploads:/app/uploads
+      - outputs:/app/outputs
+      - logs:/app/logs
+      - settings:/app/settings
+      - ffmpeg_bin:/app/ffmpeg
+      # Свои ffmpeg/ffprobe: положите bin/ffmpeg и bin/ffprobe и раскомментируйте:
+      # - ./data/ffmpeg:/app/ffmpeg
+      # Bind-mount на диск хоста (раскомментируйте и закомментируйте named volumes выше):
+      # - ./data/uploads:/app/uploads
+      # - ./data/outputs:/app/outputs
+      # - ./data/logs:/app/logs
+      # - ./data/settings:/app/settings
+      # Пресеты встроены в образ; раскомментируйте для переопределения с хоста:
+      # - ./presets:/app/presets
+    environment:
+      - FLASK_ENV=production
+      - PYTHONPATH=/app
+      - FLASK_DEBUG=0
+      - FFMPEG_DIR=/app/ffmpeg
+      - FFMPEG_THREAD_QUEUE_SIZE=1024
+      - LOG_LEVEL=WARNING
+      - CONSOLE_LOG_LEVEL=WARNING
+      - MEMORY_LOG_LEVEL=INFO
+      - TZ=Asia/Novosibirsk
+      - CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http://172.18.0.1:3000,http://pc13.local:3000,http://*.local:3000
+      - SOCKETIO_ASYNC_MODE=threading
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+        reservations:
+          memory: 4G
+
+volumes:
+  uploads:
+  outputs:
+  logs:
+  settings:
+  ffmpeg_bin:

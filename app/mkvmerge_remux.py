@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -10,6 +11,8 @@ import subprocess
 from typing import Any, Optional
 
 from app.file_utils import cleanup_file
+
+logger = logging.getLogger('video_encoder')
 
 ANILIBERTY_AUDIO_TITLE = 'AniLiberty'
 SIGN_SUBTITLE_TITLE = 'Надписи'
@@ -243,6 +246,7 @@ def build_mkvmerge_options(
 
     tracks = _regular_tracks(identify)
     single_video = sum(1 for track in tracks if track.get('type') == 'video') == 1
+    subtitle_titles = _resolve_subtitle_titles(tracks)
     for track in tracks:
         options.extend(
             _options_for_track(
@@ -250,6 +254,7 @@ def build_mkvmerge_options(
                 nickname=nickname,
                 audio_encoded=audio_encoded,
                 single_video=single_video,
+                subtitle_title=subtitle_titles.get(_track_id(track)),
             )
         )
 
@@ -287,20 +292,26 @@ def _options_for_track(
     nickname: str,
     audio_encoded: bool,
     single_video: bool,
+    subtitle_title: Optional[str] = None,
 ) -> list[str]:
     tid = _track_id(track)
     track_type = str(track.get('type') or '')
     props = _props(track)
     title = str(props.get('track_name') or '')
     language = _language_from_props(props)
-    new_title = _apply_nickname(track_type, title, nickname, audio_encoded)
+    if track_type == 'subtitles' and subtitle_title is not None:
+        new_title = subtitle_title
+        rule_title = subtitle_title
+    else:
+        new_title = _apply_nickname(track_type, title, nickname, audio_encoded)
+        rule_title = title
 
     options: list[str] = []
 
     if track_type == 'subtitles' and _is_text_subtitle(track):
         options.extend(['--sub-charset', f'{tid}:UTF-8'])
 
-    resolved = resolve_language(track_type, title, language)
+    resolved = resolve_language(track_type, rule_title, language)
     if resolved:
         options.extend(['--language', f'{tid}:{resolved}'])
 
@@ -311,7 +322,7 @@ def _options_for_track(
         _flag_options_for_track(
             tid,
             track_type,
-            title,
+            rule_title,
             single_video=single_video,
         )
     )
@@ -335,8 +346,13 @@ def _flag_options_for_track(
     """Явные флаги mkvmerge: исходник может врать, копировать его нельзя."""
     title = (title or '').strip()
 
-    if track_type == 'video' and single_video:
-        return _default_forced_flags(tid, enabled=True)
+    if track_type == 'video':
+        flags: list[str] = []
+        if single_video:
+            flags.extend(_default_forced_flags(tid, enabled=True))
+        if is_original_track_title(title):
+            flags.extend(['--original-flag', f'{tid}:1'])
+        return flags
 
     if track_type == 'audio' and is_aniliberty_title(title):
         return _default_forced_flags(tid, enabled=True)
@@ -351,6 +367,50 @@ def _flag_options_for_track(
         return _default_forced_flags(tid, enabled=False)
 
     return []
+
+
+def _resolve_subtitle_titles(tracks: list[dict[str, Any]]) -> dict[int, str]:
+    """Имена субтитров по default: «Надписи» / «Субтитры»."""
+    subs = [track for track in tracks if track.get('type') == 'subtitles']
+    if not subs:
+        logger.info(
+            'Субтитры в файле отсутствуют: правила именования '
+            '«Надписи»/«Субтитры» не применяются'
+        )
+        return {}
+
+    if len(subs) == 2:
+        defaults = [track for track in subs if _is_default_track(track)]
+        if len(defaults) == 1:
+            default_id = _track_id(defaults[0])
+            return {
+                _track_id(track): (
+                    SIGN_SUBTITLE_TITLE
+                    if _track_id(track) == default_id
+                    else SUBTITLE_TITLE
+                )
+                for track in subs
+            }
+        return {
+            _track_id(subs[0]): SIGN_SUBTITLE_TITLE,
+            _track_id(subs[1]): SUBTITLE_TITLE,
+        }
+
+    return {
+        _track_id(track): (
+            SIGN_SUBTITLE_TITLE if _is_default_track(track) else SUBTITLE_TITLE
+        )
+        for track in subs
+    }
+
+
+def _is_default_track(track: dict[str, Any]) -> bool:
+    value = _props(track).get('default_track')
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or '').strip().lower() in ('1', 'true', 'yes', 'on')
 
 
 def _default_forced_flags(tid: int, *, enabled: bool) -> list[str]:

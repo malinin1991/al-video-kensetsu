@@ -69,7 +69,8 @@ def _sample_identify(*, color=True, pgs=True) -> dict:
             codec_id='S_TEXT/UTF8',
             text_subtitles=True,
             language='',
-            track_name='Надписи',
+            track_name='Signs',
+            default_track=True,
         ),
         _track(
             4, 'subtitles',
@@ -77,7 +78,8 @@ def _sample_identify(*, color=True, pgs=True) -> dict:
             codec_id='S_TEXT/UTF8',
             text_subtitles=True,
             language='rus',
-            track_name='Субтитры',
+            track_name='Full',
+            default_track=False,
         ),
     ]
     if pgs:
@@ -87,6 +89,7 @@ def _sample_identify(*, color=True, pgs=True) -> dict:
             codec_id='S_HDMV/PGS',
             language='und',
             track_name='Signs',
+            default_track=False,
         ))
     return {
         'identification_format_version': 20,
@@ -189,7 +192,7 @@ class TestBuildMkvmergeOptions:
         assert '2:ja' in _flag_values(args, '--language')
         assert '3:ru' in _flag_values(args, '--language')
         assert '4:ru' in _flag_values(args, '--language')
-        assert not any(value.startswith('5:') for value in _flag_values(args, '--language'))
+        assert '5:ru' in _flag_values(args, '--language')
 
         assert '--track-order' in args
         assert args[args.index('--track-order') + 1] == '0:0,0:1,0:2,0:3,0:4,0:5'
@@ -218,11 +221,11 @@ class TestBuildMkvmergeOptions:
         assert '2:1' not in forced
         assert '2:0' not in defaults
         assert '2:0' not in forced
-        # видео Original не получает original-flag
-        assert '0:1' not in original
-        # PGS Signs — без правил
-        assert not any(value.startswith('5:') for value in defaults)
-        assert not any(value.startswith('5:') for value in forced)
+        # видео Original → original-flag вместе с default+forced
+        assert '0:1' in original
+        # третья дорожка субтитров без default → «Субтитры»
+        assert '5:0' in defaults
+        assert '5:0' in forced
         assert not any(value.startswith('5:') for value in original)
 
     def test_aniliberty_flags_strip_title(self):
@@ -235,21 +238,25 @@ class TestBuildMkvmergeOptions:
         assert '1:1' in forced
         assert '1:ru' in _flag_values(args, '--language')
 
-    def test_subtitle_titles_strip_for_language_and_flags(self):
+    def test_subtitle_titles_from_default_flag_not_source_name(self):
         identify = _sample_identify(pgs=False)
-        identify['tracks'][3]['properties']['track_name'] = '  Надписи  '
-        identify['tracks'][4]['properties']['track_name'] = '  Субтитры  '
+        identify['tracks'][3]['properties']['track_name'] = '  Signs  '
+        identify['tracks'][3]['properties']['default_track'] = True
+        identify['tracks'][4]['properties']['track_name'] = '  Full  '
+        identify['tracks'][4]['properties']['default_track'] = False
         args = _build(identify=identify)
+        names = _flag_values(args, '--track-name')
         defaults = _flag_values(args, '--default-track-flag')
         forced = _flag_values(args, '--forced-display-flag')
         langs = _flag_values(args, '--language')
+        assert '3:Надписи' in names
+        assert '4:Субтитры' in names
         assert '3:ru' in langs
         assert '4:ru' in langs
         assert '3:1' in defaults
         assert '3:1' in forced
         assert '4:0' in defaults
         assert '4:0' in forced
-        # остальные правила флагов не должны сдвинуться из-за пробелов в именах
         assert '1:1' in defaults
         assert '2:1' in _flag_values(args, '--original-flag')
         assert '2:1' not in defaults
@@ -277,6 +284,91 @@ class TestBuildMkvmergeOptions:
         assert '6:1' not in forced
         assert '1:1' in defaults
         assert '1:1' in forced
+        assert '0:1' in _flag_values(args, '--original-flag')
+        assert '6:1' not in _flag_values(args, '--original-flag')
+
+    def test_single_default_subtitle_named_nadpisi(self):
+        identify = _sample_identify(pgs=False)
+        identify['tracks'] = [
+            identify['tracks'][0],
+            _track(
+                1, 'subtitles',
+                codec='SubRip/SRT',
+                codec_id='S_TEXT/UTF8',
+                text_subtitles=True,
+                language='und',
+                track_name='Whatever',
+                default_track=True,
+            ),
+        ]
+        args = _build(identify=identify, nickname='')
+        assert '1:Надписи' in _flag_values(args, '--track-name')
+        assert '1:1' in _flag_values(args, '--default-track-flag')
+        assert '1:1' in _flag_values(args, '--forced-display-flag')
+        assert '1:ru' in _flag_values(args, '--language')
+
+    def test_single_non_default_subtitle_named_subtitles(self):
+        identify = _sample_identify(pgs=False)
+        identify['tracks'] = [
+            identify['tracks'][0],
+            _track(
+                1, 'subtitles',
+                codec='SubRip/SRT',
+                codec_id='S_TEXT/UTF8',
+                text_subtitles=True,
+                language='jpn',
+                track_name='Dialogue',
+                default_track=False,
+            ),
+        ]
+        args = _build(identify=identify, nickname='')
+        assert '1:Субтитры' in _flag_values(args, '--track-name')
+        assert '1:0' in _flag_values(args, '--default-track-flag')
+        assert '1:0' in _flag_values(args, '--forced-display-flag')
+        assert '1:ru' in _flag_values(args, '--language')
+
+    def test_two_subtitles_swap_names_by_default_flag(self):
+        identify = _sample_identify(pgs=False)
+        identify['tracks'][3]['properties']['track_name'] = 'Full'
+        identify['tracks'][3]['properties']['default_track'] = False
+        identify['tracks'][4]['properties']['track_name'] = 'Signs'
+        identify['tracks'][4]['properties']['default_track'] = True
+        args = _build(identify=identify, nickname='')
+        names = _flag_values(args, '--track-name')
+        defaults = _flag_values(args, '--default-track-flag')
+        assert '3:Субтитры' in names
+        assert '4:Надписи' in names
+        assert '3:0' in defaults
+        assert '4:1' in defaults
+
+    def test_two_subtitles_without_unique_default_use_order(self):
+        identify = _sample_identify(pgs=False)
+        identify['tracks'][3]['properties']['default_track'] = False
+        identify['tracks'][4]['properties']['default_track'] = False
+        args = _build(identify=identify, nickname='')
+        names = _flag_values(args, '--track-name')
+        assert '3:Надписи' in names
+        assert '4:Субтитры' in names
+
+    def test_no_subtitles_logs_and_skips_naming(self, caplog):
+        identify = {
+            'container': {'recognized': True, 'supported': True},
+            'tracks': [
+                _track(
+                    0, 'video',
+                    codec_id='V_MPEGH/ISO/HEVC',
+                    pixel_dimensions='1920x1080',
+                    language='jpn',
+                    track_name='Original',
+                ),
+            ],
+        }
+        with caplog.at_level('INFO', logger='video_encoder'):
+            args = _build(identify=identify, nickname='')
+        assert 'Субтитры в файле отсутствуют' in caplog.text
+        names = _flag_values(args, '--track-name')
+        assert not any('Надписи' in name or 'Субтитры' in name for name in names)
+        assert '0:1' in _flag_values(args, '--original-flag')
 
     def test_nickname_video_always_audio_only_original_when_encoded(self):
         copy_args = _build(audio_codec='copy', nickname='Nick')

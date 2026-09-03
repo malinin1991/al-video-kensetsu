@@ -178,9 +178,11 @@
                             <strong>Правила:</strong>
                             глобальные и служебные теги FFmpeg удаляются;
                             единственное видео — default + forced;
+                            видео «Original»/«Оригинал» — original-flag;
                             аудио «AniLiberty» — default + forced;
-                            аудио «Original»/«Оригинал» — язык оригинала;
-                            субтитры «Надписи» — default + forced, «Субтитры» — только включена.
+                            аудио «Original»/«Оригинал» — язык оригинала и original-flag;
+                            субтитры: default → «Надписи» (default + forced), иначе → «Субтитры»;
+                            если субтитров нет — запись в системный лог.
                         </small>
                     </div>
                 </div>

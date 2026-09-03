@@ -23,7 +23,7 @@ video-encoder:
     CONSOLE_LOG_LEVEL: WARNING
     MEMORY_LOG_LEVEL: INFO
     TZ: Asia/Novosibirsk
-    CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+    CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000,http://*.mageek.home,https://*.mageek.su,http://192.168.1.254:3000
     SOCKETIO_ASYNC_MODE: threading
     INTERNAL_SOURCE_ROOTS: /anilibria
   healthcheck:

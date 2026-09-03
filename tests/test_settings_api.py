@@ -61,3 +61,11 @@ class TestMetadataSettingsApi:
         )
         assert response.status_code == 200
         assert response.get_json()['metadata_nickname'] == 'Nick@AL#1'
+
+    def test_put_allows_brackets_and_plus(self, client):
+        response = client.put(
+            '/api/settings/metadata',
+            json={'metadata_nickname': 'Ник [AL]+1'},
+        )
+        assert response.status_code == 200
+        assert response.get_json()['metadata_nickname'] == 'Ник [AL]+1'

@@ -12,6 +12,7 @@ from app.mkvmerge_remux import (
     build_mkvmerge_options,
     cleanup_job_sidecars,
     compress_language,
+    escape_nickname_for_tag,
     get_mkvmerge_bin,
     identify_encoded_file,
     is_aniliberty_title,
@@ -19,6 +20,7 @@ from app.mkvmerge_remux import (
     job_sidecar_paths,
     resolve_language,
     sanitize_nickname,
+    unescape_nickname_tag,
 )
 
 
@@ -121,6 +123,7 @@ class TestSanitizeNickname:
         assert sanitize_nickname(' nick_1 ') == 'nick_1'
         assert sanitize_nickname('A@B#C$1!') == 'A@B#C$1!'
         assert sanitize_nickname('Ник [AL]') == 'Ник [AL]'
+        assert sanitize_nickname('Nick+AL') == 'Nick+AL'
         assert sanitize_nickname('') == ''
 
     def test_rejects_control_and_too_long(self):
@@ -129,6 +132,30 @@ class TestSanitizeNickname:
         with pytest.raises(ValueError, match='длинный'):
             sanitize_nickname('x' * 65)
 
+    def test_escape_structural_chars(self):
+        assert escape_nickname_for_tag('Nick') == 'Nick'
+        assert escape_nickname_for_tag('Ник [AL]') == r'Ник \[AL\]'
+        assert escape_nickname_for_tag('Nick+AL') == r'Nick\+AL'
+        assert escape_nickname_for_tag(r'a\b') == r'a\\b'
+        assert escape_nickname_for_tag('[Anim,ad') == r'\[Anim,ad'
+        assert escape_nickname_for_tag('[[Anim,ad]') == r'\[\[Anim,ad\]'
+        assert escape_nickname_for_tag('Nick + AL') == r'Nick \+ AL'
+        assert escape_nickname_for_tag('a+b+c') == r'a\+b\+c'
+        assert escape_nickname_for_tag('HDR10+') == r'HDR10\+'
+
+    def test_unescape_roundtrip(self):
+        cases = (
+            'Nick',
+            r'Ник \[AL\]',
+            r'Nick\+AL',
+            r'a\\b',
+            r'HDR10\+',
+            r'Nick \+ AL',
+        )
+        for escaped in cases:
+            assert escape_nickname_for_tag(unescape_nickname_tag(escaped)) == escaped
+        assert unescape_nickname_tag(r'HDR10\+') == 'HDR10+'
+        assert unescape_nickname_tag(r'Ник \[AL\]') == 'Ник [AL]'
 
 class TestOriginalTitleAndLanguage:
     def test_original_prefixes(self):
@@ -385,6 +412,18 @@ class TestBuildMkvmergeOptions:
         assert encoded_names.count('0:Original [Nick]') == 1
         assert '1:AniLiberty' in encoded_names
 
+    def test_original_becomes_original_bracket_nickname(self):
+        """Без []: Title → Title [NickName] (имя дорожки не важно)."""
+        for title in ('Original', 'AniLiberty', 'Something Else'):
+            identify = _sample_identify()
+            identify['tracks'][0]['properties']['track_name'] = title
+            args = _build(identify=identify, nickname='NickName', audio_codec='copy')
+            names = _flag_values(args, '--track-name')
+            expected = f'0:{title} [NickName]'
+            assert expected in names
+            assert not any(name.startswith(f'0:{title} [NickName +') for name in names)
+            assert names.count(expected) == 1
+
     def test_does_not_duplicate_existing_nickname(self):
         identify = _sample_identify()
         identify['tracks'][0]['properties']['track_name'] = 'Original [Nick]'
@@ -392,11 +431,187 @@ class TestBuildMkvmergeOptions:
         assert _flag_values(args, '--track-name').count('0:Original [Nick]') == 1
         assert '0:Original [Nick] [Nick]' not in _flag_values(args, '--track-name')
 
+    def test_video_merges_nickname_into_existing_brackets(self):
+        """С []: вклеиваем внутрь, независимо от base-имени."""
+        for title in ('AniLiberty [Nokt]', 'Original [Nokt]', 'Custom [Encoder]'):
+            identify = _sample_identify()
+            identify['tracks'][0]['properties']['track_name'] = title
+            base, _, tag = title.partition(' [')
+            tag = tag.rstrip(']')
+            args = _build(identify=identify, nickname='Nick', audio_codec='copy')
+            names = _flag_values(args, '--track-name')
+            assert f'0:{base} [Nick + {tag}]' in names
+            assert f'0:{title} [Nick]' not in names
+
+    def test_video_does_not_duplicate_nick_already_in_merged_tag(self):
+        identify = _sample_identify()
+        identify['tracks'][0]['properties']['track_name'] = 'AniLiberty [Nick + Nokt]'
+        args = _build(identify=identify, nickname='Nick', audio_codec='copy')
+        names = _flag_values(args, '--track-name')
+        assert names.count('0:AniLiberty [Nick + Nokt]') == 1
+        assert '0:AniLiberty [Nick + Nick + Nokt]' not in names
+
     def test_video_empty_title_becomes_bracket_nick(self):
         identify = _sample_identify()
         identify['tracks'][0]['properties']['track_name'] = ''
         args = _build(identify=identify, nickname='Nick')
         assert '0:[Nick]' in _flag_values(args, '--track-name')
+
+    def test_video_escapes_structural_chars_in_nickname(self):
+        identify = _sample_identify()
+        identify['tracks'][0]['properties']['track_name'] = 'AniLiberty [Nokt]'
+        args = _build(identify=identify, nickname='Ник [AL]', audio_codec='copy')
+        names = _flag_values(args, '--track-name')
+        assert r'0:AniLiberty [Ник \[AL\] + Nokt]' in names
+        assert '0:AniLiberty [Ник [AL] + Nokt]' not in names
+
+        # Идемпотентность после экранирования
+        identify['tracks'][0]['properties']['track_name'] = r'AniLiberty [Ник \[AL\] + Nokt]'
+        again = _build(identify=identify, nickname='Ник [AL]', audio_codec='copy')
+        again_names = _flag_values(again, '--track-name')
+        assert again_names.count(r'0:AniLiberty [Ник \[AL\] + Nokt]') == 1
+
+        plain = _sample_identify()
+        plain['tracks'][0]['properties']['track_name'] = 'Original'
+        plain_args = _build(identify=plain, nickname='Ник [AL]', audio_codec='copy')
+        assert r'0:Original [Ник \[AL\]]' in _flag_values(plain_args, '--track-name')
+
+    def test_video_weird_bracket_nicknames_do_not_break(self):
+        """Ники с [, ], + (в т.ч. [Anim,ad / [[Anim,ad]) не ломают разбор и идемпотентность."""
+        cases = (
+            ('[Anim,ad', r'\[Anim,ad'),
+            ('[[Anim,ad]', r'\[\[Anim,ad\]'),
+            ('Anim]ad[', r'Anim\]ad\['),
+            ('[Anim+ad]', r'\[Anim\+ad\]'),
+            ('Anim+ad', r'Anim\+ad'),
+            ('Nick + AL', r'Nick \+ AL'),
+            ('+prefix', r'\+prefix'),
+            ('tail+', r'tail\+'),
+            ('a+b+c', r'a\+b\+c'),
+            ('[Anim,ad]+x', r'\[Anim,ad\]\+x'),
+        )
+        for nickname, escaped in cases:
+            assert sanitize_nickname(nickname) == nickname
+            assert escape_nickname_for_tag(nickname) == escaped
+
+            # без [] → Title [escaped]
+            for title in ('Original', 'AniLiberty'):
+                identify = _sample_identify()
+                identify['tracks'][0]['properties']['track_name'] = title
+                args = _build(identify=identify, nickname=nickname, audio_codec='copy')
+                names = _flag_values(args, '--track-name')
+                expected = f'0:{title} [{escaped}]'
+                assert expected in names, nickname
+                # сырой ник без escape не должен попасть в название (если он отличается)
+                if nickname != escaped:
+                    assert f'0:{title} [{nickname}]' not in names
+
+            # с [] → Title [escaped + Existing]
+            identify = _sample_identify()
+            identify['tracks'][0]['properties']['track_name'] = 'AniLiberty [Nokt]'
+            merged_args = _build(identify=identify, nickname=nickname, audio_codec='copy')
+            merged_names = _flag_values(merged_args, '--track-name')
+            merged = f'0:AniLiberty [{escaped} + Nokt]'
+            assert merged in merged_names, nickname
+            assert f'0:AniLiberty [Nokt] [{nickname}]' not in merged_names
+            if nickname != escaped:
+                assert f'0:AniLiberty [{nickname} + Nokt]' not in merged_names
+
+            # повторный прогон не дублирует (в т.ч. когда в нике есть « + »)
+            identify['tracks'][0]['properties']['track_name'] = f'AniLiberty [{escaped} + Nokt]'
+            again = _build(identify=identify, nickname=nickname, audio_codec='copy')
+            assert _flag_values(again, '--track-name').count(merged) == 1
+            assert f'0:AniLiberty [{escaped} + {escaped} + Nokt]' not in _flag_values(
+                again, '--track-name'
+            )
+
+    def test_video_empty_brackets_become_nick(self):
+        identify = _sample_identify()
+        identify['tracks'][0]['properties']['track_name'] = 'Title []'
+        args = _build(identify=identify, nickname='Nick', audio_codec='copy')
+        names = _flag_values(args, '--track-name')
+        assert '0:Title [Nick]' in names
+        assert '0:Title [Nick + ]' not in names
+
+    def test_video_crazy_nested_brackets_merge_verbatim(self):
+        nested = r'AniLiberty [d[][]][][][[[[]]]d[]][]/\]]]'
+        identify = _sample_identify()
+        identify['tracks'][0]['properties']['track_name'] = nested
+        args = _build(identify=identify, nickname='NickName', audio_codec='copy')
+        names = _flag_values(args, '--track-name')
+        expected = r'0:AniLiberty [NickName + d[][]][][][[[[]]]d[]][]/\]]]'
+        assert expected in names
+
+        identify['tracks'][0]['properties']['track_name'] = expected[2:]  # без '0:'
+        again = _build(identify=identify, nickname='NickName', audio_codec='copy')
+        assert _flag_values(again, '--track-name').count(expected) == 1
+        assert r'0:AniLiberty [NickName + NickName + d[][]][][][[[[]]]d[]][]/\]]]' not in (
+            _flag_values(again, '--track-name')
+        )
+
+    def test_video_hdr10_plus_tag_idempotent_with_raw_plus_nick(self):
+        identify = _sample_identify()
+        identify['tracks'][0]['properties']['track_name'] = 'Title [HDR10+]'
+        args = _build(identify=identify, nickname='HDR10+', audio_codec='copy')
+        names = _flag_values(args, '--track-name')
+        assert names.count('0:Title [HDR10+]') == 1
+        assert r'0:Title [HDR10\+ + HDR10+]' not in names
+        assert r'0:Title [HDR10\+]' not in names
+
+    def test_video_legacy_nested_nick_idempotent_and_merge(self):
+        legacy = 'Original [Ник [AL]]'
+        identify = _sample_identify()
+        identify['tracks'][0]['properties']['track_name'] = legacy
+        same = _build(identify=identify, nickname='Ник [AL]', audio_codec='copy')
+        assert _flag_values(same, '--track-name').count(f'0:{legacy}') == 1
+        assert r'0:Original [Ник \[AL\] + Ник [AL]]' not in _flag_values(same, '--track-name')
+
+        other = _build(identify=identify, nickname='Other', audio_codec='copy')
+        assert '0:Original [Other + Ник [AL]]' in _flag_values(other, '--track-name')
+
+        special = _build(identify=identify, nickname='Ник [X]', audio_codec='copy')
+        assert r'0:Original [Ник \[X\] + Ник [AL]]' in _flag_values(special, '--track-name')
+
+    def test_video_uses_last_outer_bracket_pair_at_eos(self):
+        identify = _sample_identify()
+        identify['tracks'][0]['properties']['track_name'] = 'Title [A] [B]'
+        args = _build(identify=identify, nickname='Nick', audio_codec='copy')
+        names = _flag_values(args, '--track-name')
+        assert '0:Title [A] [Nick + B]' in names
+        assert '0:Title [Nick + A] [B]' not in names
+
+    def test_video_unbalanced_closing_bracket_appends_suffix(self):
+        identify = _sample_identify()
+        identify['tracks'][0]['properties']['track_name'] = 'Title ]'
+        args = _build(identify=identify, nickname='Nick', audio_codec='copy')
+        assert '0:Title ] [Nick]' in _flag_values(args, '--track-name')
+
+    def test_audio_still_appends_suffix_without_merge(self):
+        identify = _sample_identify()
+        identify['tracks'][2]['properties']['track_name'] = 'Original [JP]'
+        args = _build(identify=identify, nickname='Nick', audio_codec='libopus')
+        names = _flag_values(args, '--track-name')
+        assert '2:Original [JP] [Nick]' in names
+        assert '2:Original [Nick + JP]' not in names
+
+    def test_audio_escapes_special_nick_and_idempotent_raw_or_escaped(self):
+        identify = _sample_identify()
+        identify['tracks'][2]['properties']['track_name'] = 'Original'
+        args = _build(identify=identify, nickname='Ник [AL]', audio_codec='libopus')
+        names = _flag_values(args, '--track-name')
+        assert r'2:Original [Ник \[AL\]]' in names
+        assert '2:Original [Ник [AL]]' not in names
+
+        identify['tracks'][2]['properties']['track_name'] = r'Original [Ник \[AL\]]'
+        again = _build(identify=identify, nickname='Ник [AL]', audio_codec='libopus')
+        assert _flag_values(again, '--track-name').count(r'2:Original [Ник \[AL\]]') == 1
+
+        identify['tracks'][2]['properties']['track_name'] = 'Original [Ник [AL]]'
+        raw_again = _build(identify=identify, nickname='Ник [AL]', audio_codec='libopus')
+        assert _flag_values(raw_again, '--track-name').count('2:Original [Ник [AL]]') == 1
+        assert r'2:Original [Ник [AL]] [Ник \[AL\]]' not in _flag_values(
+            raw_again, '--track-name'
+        )
 
     def test_charset_only_for_text_subs(self):
         args = _build()

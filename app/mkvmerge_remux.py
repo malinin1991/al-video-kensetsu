@@ -23,6 +23,7 @@ _ORIGINAL_PREFIX_RE = re.compile(
     re.IGNORECASE,
 )
 _NICKNAME_CONTROL_RE = re.compile(r'[\x00-\x1f\x7f]')
+_NICKNAME_TAG_ESCAPE_RE = re.compile(r'([\\\[\]+])')
 _MAX_NICKNAME_LEN = 64
 _DIMENSIONS_RE = re.compile(r'^[0-9]+x[0-9]+$')
 _REGULAR_TRACK_TYPES = frozenset({'video', 'audio', 'subtitles'})
@@ -84,6 +85,26 @@ def sanitize_nickname(nickname: str) -> str:
     if _NICKNAME_CONTROL_RE.search(cleaned):
         raise ValueError('Ник не должен содержать управляющие символы (переносы строк и т.п.)')
     return cleaned
+
+
+def escape_nickname_for_tag(nickname: str) -> str:
+    """Экранирует \\ [ ] + для безопасной вставки внутрь […]."""
+    return _NICKNAME_TAG_ESCAPE_RE.sub(r'\\\1', nickname)
+
+
+def unescape_nickname_tag(value: str) -> str:
+    """Обратная к escape_nickname_for_tag: \\, \\[, \\], \\+ → литералы."""
+    out: list[str] = []
+    i = 0
+    text = value or ''
+    while i < len(text):
+        if text[i] == '\\' and i + 1 < len(text) and text[i + 1] in '\\[]+':
+            out.append(text[i + 1])
+            i += 2
+            continue
+        out.append(text[i])
+        i += 1
+    return ''.join(out)
 
 
 def is_original_track_title(title: str) -> bool:
@@ -430,7 +451,7 @@ def _apply_nickname(
     if not nickname:
         return title
     if track_type == 'video':
-        updated = _append_nickname_suffix(title or '', nickname)
+        updated = _merge_video_nickname(title or '', nickname)
         return updated if updated is not None else title
     if track_type == 'audio' and audio_encoded and is_original_track_title(title):
         updated = _append_nickname_suffix(title, nickname)
@@ -438,13 +459,105 @@ def _apply_nickname(
     return title
 
 
+def _is_escaped_at(text: str, index: int) -> bool:
+    """True, если символ text[index] экранирован нечётным числом \\ слева."""
+    count = 0
+    pos = index - 1
+    while pos >= 0 and text[pos] == '\\':
+        count += 1
+        pos -= 1
+    return count % 2 == 1
+
+
+def _split_trailing_outer_brackets(title: str) -> Optional[tuple[str, str]]:
+    """Хвостовая внешняя пара [] через подсчёт глубины с конца.
+
+    Экранированные \\[ \\] не влияют на глубину (ник не ломает разбор).
+    Содержимое между скобками не интерпретируется и не unescape-ится.
+    Если баланс не сходится (лишние ]), берём первую неэкранированную [
+    до финальной ] — чтобы абсурдные вложенные теги всё же мержились.
+    """
+    stripped = (title or '').strip()
+    if not stripped.endswith(']'):
+        return None
+    if _is_escaped_at(stripped, len(stripped) - 1):
+        return None
+
+    depth = 0
+    open_index: Optional[int] = None
+    for index in range(len(stripped) - 1, -1, -1):
+        char = stripped[index]
+        if char not in '[]' or _is_escaped_at(stripped, index):
+            continue
+        if char == ']':
+            depth += 1
+        else:  # '['
+            depth -= 1
+            if depth == 0:
+                open_index = index
+                break
+
+    if open_index is None:
+        # Несбалансированные лишние ] — внешняя пара от первой [ до EOS ]
+        for index, char in enumerate(stripped):
+            if char == '[' and not _is_escaped_at(stripped, index):
+                open_index = index
+                break
+        if open_index is None:
+            return None
+
+    base = stripped[:open_index].rstrip()
+    existing = stripped[open_index + 1 : -1]
+    return base, existing
+
+
+def _nickname_already_present(existing: str, nickname: str, tag_nick: str) -> bool:
+    """Идемпотентность: экранированный и «сырой»/разэкранированный ник."""
+    if existing == tag_nick or existing.startswith(f'{tag_nick} + '):
+        return True
+    if existing == nickname:
+        return True
+    unescaped = unescape_nickname_tag(existing)
+    if unescaped == nickname or unescaped.startswith(f'{nickname} + '):
+        return True
+    return False
+
+
+def _merge_video_nickname(title: str, nickname: str) -> Optional[str]:
+    """Вклеивает ник по хвостовой внешней паре [] (имя дорожки не важно):
+    Title → Title [Nick]; Title [Nokt] → Title [Nick + Nokt].
+    Содержимое внутри [] сохраняется дословно; в нике \\ [ ] + экранируются.
+    """
+    tag_nick = escape_nickname_for_tag(nickname)
+    stripped = (title or '').strip()
+    if not stripped:
+        return f'[{tag_nick}]'
+
+    split = _split_trailing_outer_brackets(stripped)
+    if split is None:
+        return f'{stripped} [{tag_nick}]'
+
+    base, existing = split
+    if not existing:
+        return f'{base} [{tag_nick}]' if base else f'[{tag_nick}]'
+
+    if _nickname_already_present(existing, nickname, tag_nick):
+        return None
+
+    merged_tag = f'{tag_nick} + {existing}'
+    if base:
+        return f'{base} [{merged_tag}]'
+    return f'[{merged_tag}]'
+
+
 def _append_nickname_suffix(title: str, nickname: str) -> Optional[str]:
-    suffix = f' [{nickname}]'
-    if title.endswith(suffix):
+    """Простой суффикс для аудио Original (без merge): Title → Title [Nick]."""
+    tag_nick = escape_nickname_for_tag(nickname)
+    if title.endswith(f' [{tag_nick}]') or title.endswith(f' [{nickname}]'):
         return None
     if not title.strip():
-        return f'[{nickname}]'
-    return f'{title}{suffix}'
+        return f'[{tag_nick}]'
+    return f'{title} [{tag_nick}]'
 
 
 def resolve_language(track_type: str, title: str, current_language: str) -> Optional[str]:

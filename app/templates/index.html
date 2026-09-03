@@ -165,10 +165,14 @@
                             </button>
                         </div>
                         <div class="form-help">
-                            Добавляется к названию <strong>видео</strong> всегда (если видео перекодируется)
-                            и к аудио «Original»/«Оригинал» при перекодировании аудио.
+                            Для <strong>видео</strong> смотрим только на хвостовую внешнюю пару <code>[]</code>
+                            (содержимое внутри сохраняется как есть, вложенность не разбираем):
+                            без скобок — <code>Title [Nick]</code> (и Original, и AniLiberty, и любое другое имя);
+                            со скобками — вклеиваем в начало тега: <code>Title [Nick + …]</code>.
+                            Для аудио «Original»/«Оригинал» — простой суффикс при перекодировании аудио (без merge).
                             Сохраняется в томе <code>settings</code> (<code>/app/settings/app_settings.json</code>) и переживает перезапуск.
-                            Можно буквы, цифры и спецсимволы; пустой ник тоже можно сохранить.
+                            Структурные символы ника (<code>\</code>, <code>[</code>, <code>]</code>, <code>+</code>) при записи в тег экранируются;
+                            пустой ник тоже можно сохранить.
                         </div>
                         <div class="form-text" id="metadataNicknameSaveStatus" aria-live="polite"></div>
                     </div>

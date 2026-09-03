@@ -8,7 +8,11 @@ import json
 from typing import Callable, Optional
 from app.models.job import Job, JobStatus, utc_now
 from app.file_utils import cleanup_file
-from app.internal_source import cleanup_job_original, is_internal_source_path
+from app.internal_source import (
+    cleanup_job_original,
+    is_internal_source_path,
+    original_in_use_by_jobs,
+)
 from app.logger import logger
 from app.ffmpeg_bootstrap import get_ffmpeg_bin, get_ffprobe_bin
 from app.mkvmerge_remux import (
@@ -248,6 +252,11 @@ class FFmpegWorker:
             return
         cleanup_job_sidecars(job.output_path, job.id)
 
+    def _active_jobs(self) -> list:
+        """Задания в очереди и в работе (для проверки общих исходников)."""
+        with self._lock:
+            return list(self.job_queue) + list(self.running_jobs.values())
+
     def _cleanup_temp_original(self, job: Job) -> None:
         """Удаляет upload/temp исходник; internal/read-only не трогает."""
         path = job.original_path
@@ -255,6 +264,11 @@ class FFmpegWorker:
             return
         if is_internal_source_path(path):
             logger.main_logger.info(f"Исходник сохранён (internal): {path}")
+            return
+        if original_in_use_by_jobs(path, self._active_jobs(), job.id):
+            logger.main_logger.info(
+                f"Исходник не удалён (используется другим заданием): {path}"
+            )
             return
         existed = os.path.exists(path)
         cleanup_job_original(path)

@@ -5,6 +5,7 @@ import uuid
 
 from app.file_utils import allowed_file, cleanup_file, ensure_directory_exists
 from app.logger import logger
+from app.models.job import JobStatus
 
 DEFAULT_SOURCE_ROOTS = ('/anilibria',)
 COPY_BUFFER_SIZE = 4 * 1024 * 1024
@@ -84,6 +85,30 @@ def is_internal_source_path(file_path):
     return False
 
 
+def paths_refer_to_same_file(path_a, path_b):
+    """True, если оба пути указывают на один и тот же файл."""
+    if not path_a or not path_b:
+        return False
+    return os.path.normcase(_safe_realpath(path_a)) == os.path.normcase(
+        _safe_realpath(path_b)
+    )
+
+
+def original_in_use_by_jobs(file_path, jobs, current_job_id=None):
+    """True, если другое активное задание ещё читает этот исходник."""
+    if not file_path:
+        return False
+    active = (JobStatus.PLANNED, JobStatus.IN_PROGRESS)
+    for job in jobs:
+        if current_job_id and job.id == current_job_id:
+            continue
+        if job.status not in active:
+            continue
+        if paths_refer_to_same_file(file_path, job.original_path):
+            return True
+    return False
+
+
 def cleanup_job_original(file_path):
     """Удаляет временный исходник. Internal/read-only не трогает.
 
@@ -94,6 +119,67 @@ def cleanup_job_original(file_path):
     existed = os.path.exists(file_path)
     cleanup_file(file_path)
     return existed and not os.path.exists(file_path)
+
+
+def _copy_file(source_path, dest_path):
+    """Копирует файл. Частичный dest удаляется при ошибке."""
+    try:
+        with open(source_path, 'rb') as src, open(dest_path, 'wb') as dst:
+            shutil.copyfileobj(src, dst, length=COPY_BUFFER_SIZE)
+        shutil.copystat(source_path, dest_path)
+    except Exception:
+        cleanup_file(dest_path)
+        raise
+
+
+def unique_original_dest(file_path, job_id, original_filename=None):
+    """Путь исходника задания: {job_id}_{оригинальное_имя}."""
+    base = os.path.basename(original_filename or file_path or 'source')
+    if is_temp_upload_path(file_path):
+        dest_dir = os.path.dirname(_safe_realpath(file_path)) or get_uploads_dir()
+    else:
+        dest_dir = get_uploads_dir()
+    ensure_directory_exists(dest_dir)
+    dest_path = os.path.join(dest_dir, f'{job_id}_{base}')
+    if os.path.exists(dest_path) and not paths_refer_to_same_file(file_path, dest_path):
+        dest_path = os.path.join(dest_dir, f'{job_id}_{uuid.uuid4().hex}_{base}')
+    return dest_path
+
+
+def bind_original_to_job(file_path, job_id, original_filename=None, *, shared=False):
+    """Даёт заданию собственный исходник: {job_id}_{basename}.
+
+    Библиотечный файл не переименовываем — копируем в uploads.
+    Если путь уже занят другим заданием — копируем, иначе переименовываем.
+    """
+    if not file_path or not job_id:
+        return file_path
+    if not os.path.isfile(file_path):
+        return file_path
+
+    dest_path = unique_original_dest(file_path, job_id, original_filename)
+    if paths_refer_to_same_file(file_path, dest_path):
+        return dest_path
+
+    library = is_internal_source_path(file_path) and not is_temp_upload_path(file_path)
+    if shared or library:
+        logger.upload_logger.info(
+            f"Копирование исходника для задания {job_id}: {file_path} -> {dest_path}"
+        )
+        try:
+            _copy_file(file_path, dest_path)
+        except Exception as exc:
+            logger.upload_logger.error(
+                f"Не удалось скопировать исходник {file_path}: {exc}"
+            )
+            raise InternalSourceError('Не удалось подготовить исходник задания', 500) from exc
+        return dest_path
+
+    os.replace(file_path, dest_path)
+    logger.upload_logger.info(
+        f"Исходник переименован для задания {job_id}: {file_path} -> {dest_path}"
+    )
+    return dest_path
 
 
 def resolve_internal_source_path(path):
@@ -142,13 +228,10 @@ def copy_internal_source_to_uploads(source_path, uploads_dir=None):
         f"Копирование внутреннего файла: {source_path} -> {dest_path}"
     )
     try:
-        with open(source_path, 'rb') as src, open(dest_path, 'wb') as dst:
-            shutil.copyfileobj(src, dst, length=COPY_BUFFER_SIZE)
-        shutil.copystat(source_path, dest_path)
+        _copy_file(source_path, dest_path)
     except InternalSourceError:
         raise
     except Exception as exc:
-        cleanup_file(dest_path)
         logger.upload_logger.error(f"Не удалось скопировать файл {source_path}: {exc}")
         raise InternalSourceError('Не удалось скопировать файл', 500) from exc
 

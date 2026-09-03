@@ -518,3 +518,29 @@ def test_parse_progress_with_total_frames_no_warning(worker):
     assert progress == pytest.approx(25.0)
     mock_logger.warning.assert_not_called()
     assert job.id not in worker._missing_total_frames_logged
+
+
+def test_cleanup_keeps_original_used_by_queued_job(worker, tmp_path, monkeypatch):
+    uploads = tmp_path / 'uploads'
+    uploads.mkdir()
+    monkeypatch.setenv('UPLOADS_DIR', str(uploads))
+    source = uploads / 'shared.mkv'
+    source.write_bytes(b'data')
+
+    job1 = _job()
+    job1.id = 'job-one'
+    job1.original_path = str(source)
+    job1.status = JobStatus.DONE
+
+    job2 = _job()
+    job2.id = 'job-two'
+    job2.original_path = str(source)
+    job2.status = JobStatus.PLANNED
+    worker.job_queue.append(job2)
+
+    worker._cleanup_temp_original(job1)
+    assert source.exists()
+
+    worker.job_queue.clear()
+    worker._cleanup_temp_original(job2)
+    assert not source.exists()

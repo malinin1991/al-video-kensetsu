@@ -13,9 +13,12 @@ from app.models.job import Job, JobStatus
 import app.routes as routes
 from app.internal_source import (
     InternalSourceError,
+    bind_original_to_job,
+    cleanup_job_original,
     is_internal_source_path,
     is_temp_upload_path,
     normalize_source_path,
+    original_in_use_by_jobs,
     resolve_internal_source_path,
 )
 
@@ -89,6 +92,38 @@ class TestInternalEncodeApi:
         assert len(copied) == 1
         assert copied[0].name.endswith('_Show [08].mkv')
         assert copied[0].read_bytes() == b'fake-video-bytes'
+
+    def test_same_file_twice_gets_unique_originals(self, client, internal_env):
+        source_root, uploads = internal_env
+        video = make_video(source_root, 'episode.mkv')
+
+        first = client.post(
+            '/api/internal/encode',
+            json={'path': str(video), 'preset_id': 'aac_audio'},
+        )
+        second = client.post(
+            '/api/internal/encode',
+            json={'path': str(video), 'preset_id': 'opus_audio'},
+        )
+        assert first.status_code == 200
+        assert second.status_code == 200
+
+        job1 = routes.get_job(first.get_json()['job']['id'])
+        job2 = routes.get_job(second.get_json()['job']['id'])
+        assert job1 is not None and job2 is not None
+        assert job1.original_path != job2.original_path
+        assert job1.filename == 'episode.mkv'
+        assert job2.filename == 'episode.mkv'
+        assert os.path.basename(job1.original_path).startswith(f'{job1.id}_')
+        assert os.path.basename(job2.original_path).startswith(f'{job2.id}_')
+        assert os.path.exists(job1.original_path)
+        assert os.path.exists(job2.original_path)
+        assert video.exists()
+
+        cleanup_job_original(job1.original_path)
+        assert not os.path.exists(job1.original_path)
+        assert os.path.exists(job2.original_path)
+        assert video.exists()
 
     def test_path_traversal_forbidden(self, client, internal_env):
         source_root, _uploads = internal_env
@@ -287,6 +322,40 @@ class TestDeleteJobSidecars:
         assert not output.exists()
         assert job.id not in routes.jobs_storage
 
+    def test_delete_keeps_original_used_by_other_job(self, client, tmp_path):
+        source = tmp_path / 'shared.mkv'
+        source.write_bytes(b'shared-source')
+        output1 = tmp_path / 'out1.mkv'
+        output1.write_bytes(b'final1')
+
+        job1 = Job(
+            id='delete-shared-one',
+            filename='shared.mkv',
+            original_path=str(source),
+        )
+        job1.status = JobStatus.DONE
+        job1.output_path = str(output1)
+        job2 = Job(
+            id='delete-shared-two',
+            filename='shared.mkv',
+            original_path=str(source),
+        )
+        job2.status = JobStatus.PLANNED
+        routes.jobs_storage[job1.id] = job1
+        routes.jobs_storage[job2.id] = job2
+        routes.get_ffmpeg_worker_instance().stop_job.return_value = {
+            'removed_from_queue': False,
+            'had_process': False,
+            'process_dead': True,
+        }
+
+        response = client.delete(f'/api/jobs/{job1.id}/delete')
+        assert response.status_code == 200
+        assert source.exists()
+        assert not output1.exists()
+        assert job1.id not in routes.jobs_storage
+        assert job2.id in routes.jobs_storage
+
 
 class TestOriginalPathKind:
     def test_upload_copy_is_temp_not_internal(self, internal_env):
@@ -298,6 +367,58 @@ class TestOriginalPathKind:
         assert not is_temp_upload_path(str(library))
         assert is_temp_upload_path(str(copy))
         assert not is_internal_source_path(str(copy))
+
+
+class TestBindOriginalToJob:
+    def test_renames_temp_upload(self, internal_env):
+        _source_root, uploads = internal_env
+        source = uploads / 'uuid_clip.mkv'
+        source.write_bytes(b'payload')
+        bound = bind_original_to_job(str(source), 'job-aaa', 'clip.mkv')
+        assert os.path.basename(bound) == 'job-aaa_clip.mkv'
+        assert os.path.exists(bound)
+        assert not source.exists()
+        assert Path(bound).read_bytes() == b'payload'
+
+    def test_copies_when_shared(self, internal_env):
+        _source_root, uploads = internal_env
+        source = uploads / 'uuid_clip.mkv'
+        source.write_bytes(b'payload')
+        bound = bind_original_to_job(
+            str(source), 'job-bbb', 'clip.mkv', shared=True
+        )
+        assert os.path.basename(bound) == 'job-bbb_clip.mkv'
+        assert os.path.exists(bound)
+        assert source.exists()
+        assert Path(bound).read_bytes() == b'payload'
+
+    def test_copies_library_file_without_renaming_it(self, internal_env):
+        source_root, uploads = internal_env
+        library = make_video(source_root, 'keep.mkv')
+        bound = bind_original_to_job(str(library), 'job-ccc', 'keep.mkv')
+        assert library.exists()
+        assert Path(bound).parent == uploads
+        assert os.path.basename(bound) == 'job-ccc_keep.mkv'
+        assert Path(bound).read_bytes() == b'fake-video-bytes'
+
+    def test_original_in_use_detects_active_job(self, tmp_path):
+        source = tmp_path / 'shared.mkv'
+        source.write_bytes(b'x')
+        active = Job(
+            id='other',
+            filename='shared.mkv',
+            original_path=str(source),
+        )
+        active.status = JobStatus.PLANNED
+        done = Job(
+            id='done',
+            filename='shared.mkv',
+            original_path=str(source),
+        )
+        done.status = JobStatus.DONE
+        assert original_in_use_by_jobs(str(source), [active], 'current')
+        assert not original_in_use_by_jobs(str(source), [done], 'current')
+        assert not original_in_use_by_jobs(str(source), [active], 'other')
 
 
 class TestResolveInternalSourcePath:

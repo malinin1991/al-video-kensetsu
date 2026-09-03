@@ -12,10 +12,12 @@ from app.file_utils import (
 )
 from app.internal_source import (
     InternalSourceError,
+    bind_original_to_job,
     cleanup_job_original,
     copy_internal_source_to_uploads,
     get_internal_source_roots,
     is_internal_source_path,
+    original_in_use_by_jobs,
     resolve_internal_source_path,
 )
 from app.logger import logger
@@ -260,8 +262,11 @@ def assemble_file_from_chunks(file_id, total_chunks, request):
         temp_dir = f'/app/uploads/temp_{file_id}'
         final_filename = request.form.get('filename', 'uploaded_file')
         
-        # Создаем финальный файл
-        final_path = os.path.join('/app/uploads', f"{file_id}_{create_secure_filename(final_filename)}")
+        # Создаем финальный файл (уникальное имя, не полагаемся на client file_id)
+        final_path = os.path.join(
+            '/app/uploads',
+            f"{uuid.uuid4().hex}_{create_secure_filename(final_filename)}",
+        )
         
         with open(final_path, 'wb') as final_file:
             for i in range(total_chunks):
@@ -402,29 +407,38 @@ def _ffmpeg_params_or_error(request):
 
 def process_single_video_file(file_path, filename, ffmpeg_params, preset_id):
     """Общая функция для обработки одиночного видео файла"""
+    bound_path = file_path
+    job_added = False
     try:
         logger.upload_logger.info(f"Обработка одиночного файла: {filename}")
         
-        file_size = os.path.getsize(file_path)
+        job_id = str(uuid.uuid4())
+        shared = original_in_use_by_jobs(file_path, get_all_jobs())
+        bound_path = bind_original_to_job(
+            file_path, job_id, filename, shared=shared
+        )
+
+        file_size = os.path.getsize(bound_path)
         
-        logger.upload_logger.info(f"Файл готов: {file_path} ({file_size} байт)")
+        logger.upload_logger.info(f"Файл готов: {bound_path} ({file_size} байт)")
         
         # Вычисляем хеш файла
-        file_hash = calculate_file_hash(file_path)
+        file_hash = calculate_file_hash(bound_path)
         
         logger.upload_logger.info(f"Хеш файла вычислен: {file_hash[:16]}...")
         
         # Создаем задание
         job = Job(
-            id="",  # Будет сгенерирован в add_job
+            id=job_id,
             filename=filename,
-            original_path=file_path,
+            original_path=bound_path,
             file_hash=file_hash,
             ffmpeg_params=ffmpeg_params,
             preset_id=preset_id
         )
         
         added_job = add_job(job)
+        job_added = True
         
         logger.upload_logger.info(f"Одиночный файл обработан успешно: задание {added_job.id}")
         
@@ -435,6 +449,8 @@ def process_single_video_file(file_path, filename, ffmpeg_params, preset_id):
         })
     
     except Exception as e:
+        if not job_added and bound_path and bound_path != file_path:
+            cleanup_file(bound_path)
         return jsonify({'error': f'Ошибка загрузки файла: {str(e)}'}), 500
 
 def handle_single_video_upload(file, filename, ffmpeg_params, preset_id):
@@ -632,10 +648,16 @@ def delete_job(job_id):
         stop_result = ffmpeg_worker.stop_job(job_id)
         logger.main_logger.info(f"Удаление задания {job_id}: {stop_result}")
         
-        # Удаляем файлы (internal/read-only исходник не трогаем)
+        # Удаляем файлы (internal/read-only и общие исходники не трогаем)
         if job.original_path and is_internal_source_path(job.original_path):
             logger.main_logger.info(
                 f"Исходник не удалён (internal): {job.original_path}"
+            )
+        elif job.original_path and original_in_use_by_jobs(
+            job.original_path, get_all_jobs(), job.id
+        ):
+            logger.main_logger.info(
+                f"Исходник не удалён (используется другим заданием): {job.original_path}"
             )
         else:
             cleanup_job_original(job.original_path)

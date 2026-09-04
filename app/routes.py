@@ -916,7 +916,7 @@ def system_info():
         
         # Читаем номер сборки из файла
         try:
-            with open('/app/build_number.txt', 'r') as f:
+            with open('/app/build_number.txt', 'r', encoding='utf-8') as f:
                 build_number = f.read().strip()
         except:
             build_number = '1'

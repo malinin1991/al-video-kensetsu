@@ -6,7 +6,7 @@ import json
 import logging
 import os
 import threading
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger('video_encoder')
 
@@ -19,13 +19,11 @@ _LEGACY_SETTINGS_PATHS = (
 _lock = threading.Lock()
 _MAX_NICKNAME_LEN = 64
 
-
 def settings_path() -> str:
     configured = os.getenv('APP_SETTINGS_PATH', '').strip()
     if configured:
         return configured
     return _DEFAULT_SETTINGS_PATH
-
 
 def _empty_settings() -> dict[str, Any]:
     return {
@@ -33,12 +31,10 @@ def _empty_settings() -> dict[str, Any]:
         'metadata_nickname': None,
     }
 
-
-def _normalize_nickname(value: Any) -> Optional[str]:
+def _normalize_nickname(value: Any) -> str | None:
     if value is None:
         return None
     return str(value).strip()[:_MAX_NICKNAME_LEN]
-
 
 def _read_file(path: str) -> dict[str, Any]:
     if not os.path.isfile(path):
@@ -56,7 +52,6 @@ def _read_file(path: str) -> dict[str, Any]:
         logger.warning(f'Не удалось прочитать настройки {path}: {exc}')
         return _empty_settings()
 
-
 def _load_settings_unlocked() -> dict[str, Any]:
     path = settings_path()
     data = _read_file(path)
@@ -72,11 +67,9 @@ def _load_settings_unlocked() -> dict[str, Any]:
 
     return data
 
-
 def load_settings() -> dict[str, Any]:
     with _lock:
         return _load_settings_unlocked()
-
 
 def _atomic_write(path: str, payload: dict[str, Any]) -> None:
     parent = os.path.dirname(path)
@@ -87,7 +80,6 @@ def _atomic_write(path: str, payload: dict[str, Any]) -> None:
         json.dump(payload, fh, ensure_ascii=False, indent=2)
         fh.write('\n')
     os.replace(tmp_path, path)
-
 
 def save_settings(updates: dict[str, Any]) -> dict[str, Any]:
     """Обновляет и сохраняет настройки в /app/settings (том settings)."""
@@ -102,11 +94,9 @@ def save_settings(updates: dict[str, Any]) -> dict[str, Any]:
         logger.info(f'Настройки сохранены: {path}')
         return dict(current)
 
-
 def has_saved_nickname() -> bool:
     """True, если ник когда-либо сохраняли в файл (включая пустой)."""
     return load_settings().get('metadata_nickname') is not None
-
 
 def get_metadata_nickname() -> str:
     """

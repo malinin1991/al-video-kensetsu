@@ -8,7 +8,7 @@ import os
 import re
 import shutil
 import subprocess
-from typing import Any, Optional
+from typing import Any
 
 from app.file_utils import cleanup_file
 
@@ -74,7 +74,6 @@ _COLOR_FLAG_MAP = (
     ('min_luminance', '--min-luminance'),
 )
 
-
 def sanitize_nickname(nickname: str) -> str:
     """Нормализует ник: trim, длина, без управляющих символов."""
     cleaned = str(nickname or '').strip()
@@ -86,11 +85,9 @@ def sanitize_nickname(nickname: str) -> str:
         raise ValueError('Ник не должен содержать управляющие символы (переносы строк и т.п.)')
     return cleaned
 
-
 def escape_nickname_for_tag(nickname: str) -> str:
     """Экранирует \\ [ ] + для безопасной вставки внутрь […]."""
     return _NICKNAME_TAG_ESCAPE_RE.sub(r'\\\1', nickname)
-
 
 def unescape_nickname_tag(value: str) -> str:
     """Обратная к escape_nickname_for_tag: \\, \\[, \\], \\+ → литералы."""
@@ -106,18 +103,15 @@ def unescape_nickname_tag(value: str) -> str:
         i += 1
     return ''.join(out)
 
-
 def is_original_track_title(title: str) -> bool:
     if not title:
         return False
     return bool(_ORIGINAL_PREFIX_RE.match(title.strip()))
 
-
 def is_aniliberty_title(title: str) -> bool:
     return (title or '').strip() == ANILIBERTY_AUDIO_TITLE
 
-
-def is_update_metadata_enabled(params: Optional[dict[str, Any]]) -> bool:
+def is_update_metadata_enabled(params: dict[str, Any] | None) -> bool:
     value = (params or {}).get('update_metadata', True)
     if isinstance(value, bool):
         return value
@@ -125,11 +119,9 @@ def is_update_metadata_enabled(params: Optional[dict[str, Any]]) -> bool:
         return True
     return str(value).strip().lower() in ('true', '1', 'yes', 'on')
 
-
-def audio_was_encoded(params: Optional[dict[str, Any]]) -> bool:
+def audio_was_encoded(params: dict[str, Any] | None) -> bool:
     codec = str((params or {}).get('audio_codec') or '').strip().lower()
     return codec not in ('', 'none', 'null', 'copy', 'remove')
-
 
 def get_mkvmerge_bin() -> str:
     configured = os.environ.get('MKVMERGE_BIN', '').strip()
@@ -148,7 +140,6 @@ def get_mkvmerge_bin() -> str:
             'mkvmerge не найден: установите mkvtoolnix или задайте MKVMERGE_BIN'
         )
     return found
-
 
 def identify_encoded_file(filepath: str, timeout: int = 60) -> dict[str, Any]:
     """Читает дорожки закодированного файла через mkvmerge -J."""
@@ -183,7 +174,6 @@ def identify_encoded_file(filepath: str, timeout: int = 60) -> dict[str, Any]:
 
     return data
 
-
 def write_option_file(path: str, options: list[str]) -> None:
     parent = os.path.dirname(path)
     if parent:
@@ -192,7 +182,6 @@ def write_option_file(path: str, options: list[str]) -> None:
         json.dump(options, handle, ensure_ascii=False, indent=2)
         handle.write('\n')
 
-
 def option_file_path(output_path: str, job_id: str = '') -> str:
     """JSON рядом с выходом, либо с id задания в имени."""
     stem, _ = os.path.splitext(output_path)
@@ -200,15 +189,12 @@ def option_file_path(output_path: str, job_id: str = '') -> str:
         return f'{stem}.{job_id}.mkvmerge.json'
     return f'{stem}.mkvmerge.json'
 
-
 def remux_temp_path(output_path: str) -> str:
     return f'{output_path}.remux.tmp'
-
 
 def encode_partial_path(output_path: str) -> str:
     stem, ext = os.path.splitext(output_path)
     return f'{stem}.partial{ext or ".mkv"}'
-
 
 def job_sidecar_paths(output_path: str, job_id: str = '') -> list[str]:
     """Промежуточные файлы encode/remux: partial, remux.tmp, JSON опций."""
@@ -231,18 +217,16 @@ def job_sidecar_paths(output_path: str, job_id: str = '') -> list[str]:
             unique.append(path)
     return unique
 
-
 def cleanup_job_sidecars(output_path: str, job_id: str = '') -> None:
     """Удаляет sidecar encode/remux, не трогая финальный выход."""
     for path in job_sidecar_paths(output_path, job_id):
         cleanup_file(path)
 
-
 def build_mkvmerge_options(
     encoded_path: str,
     output_path: str,
     identify: dict[str, Any],
-    params: Optional[dict[str, Any]] = None,
+    params: dict[str, Any] | None = None,
 ) -> list[str]:
     """
     Собирает JSON-массив аргументов mkvmerge по identify закодированного файла.
@@ -287,7 +271,6 @@ def build_mkvmerge_options(
 
     return options
 
-
 def _regular_tracks(identify: dict[str, Any]) -> list[dict[str, Any]]:
     tracks = []
     for track in identify.get('tracks') or []:
@@ -297,15 +280,12 @@ def _regular_tracks(identify: dict[str, Any]) -> list[dict[str, Any]]:
             tracks.append(track)
     return tracks
 
-
 def _track_id(track: dict[str, Any]) -> int:
     return int(track.get('id', 0))
-
 
 def _props(track: dict[str, Any]) -> dict[str, Any]:
     props = track.get('properties')
     return props if isinstance(props, dict) else {}
-
 
 def _options_for_track(
     track: dict[str, Any],
@@ -313,7 +293,7 @@ def _options_for_track(
     nickname: str,
     audio_encoded: bool,
     single_video: bool,
-    subtitle_title: Optional[str] = None,
+    subtitle_title: str | None = None,
 ) -> list[str]:
     tid = _track_id(track)
     track_type = str(track.get('type') or '')
@@ -356,7 +336,6 @@ def _options_for_track(
 
     return options
 
-
 def _flag_options_for_track(
     tid: int,
     track_type: str,
@@ -388,7 +367,6 @@ def _flag_options_for_track(
         return _default_forced_flags(tid, enabled=False)
 
     return []
-
 
 def _resolve_subtitle_titles(tracks: list[dict[str, Any]]) -> dict[int, str]:
     """Имена субтитров по default: «Надписи» / «Субтитры»."""
@@ -424,7 +402,6 @@ def _resolve_subtitle_titles(tracks: list[dict[str, Any]]) -> dict[int, str]:
         for track in subs
     }
 
-
 def _is_default_track(track: dict[str, Any]) -> bool:
     value = _props(track).get('default_track')
     if isinstance(value, bool):
@@ -433,14 +410,12 @@ def _is_default_track(track: dict[str, Any]) -> bool:
         return value != 0
     return str(value or '').strip().lower() in ('1', 'true', 'yes', 'on')
 
-
 def _default_forced_flags(tid: int, *, enabled: bool) -> list[str]:
     bit = '1' if enabled else '0'
     return [
         '--default-track-flag', f'{tid}:{bit}',
         '--forced-display-flag', f'{tid}:{bit}',
     ]
-
 
 def _apply_nickname(
     track_type: str,
@@ -458,7 +433,6 @@ def _apply_nickname(
         return updated if updated is not None else title
     return title
 
-
 def _is_escaped_at(text: str, index: int) -> bool:
     """True, если символ text[index] экранирован нечётным числом \\ слева."""
     count = 0
@@ -468,8 +442,7 @@ def _is_escaped_at(text: str, index: int) -> bool:
         pos -= 1
     return count % 2 == 1
 
-
-def _split_trailing_outer_brackets(title: str) -> Optional[tuple[str, str]]:
+def _split_trailing_outer_brackets(title: str) -> tuple[str, str] | None:
     """Хвостовая внешняя пара [] через подсчёт глубины с конца.
 
     Экранированные \\[ \\] не влияют на глубину (ник не ломает разбор).
@@ -484,7 +457,7 @@ def _split_trailing_outer_brackets(title: str) -> Optional[tuple[str, str]]:
         return None
 
     depth = 0
-    open_index: Optional[int] = None
+    open_index: int | None = None
     for index in range(len(stripped) - 1, -1, -1):
         char = stripped[index]
         if char not in '[]' or _is_escaped_at(stripped, index):
@@ -510,7 +483,6 @@ def _split_trailing_outer_brackets(title: str) -> Optional[tuple[str, str]]:
     existing = stripped[open_index + 1 : -1]
     return base, existing
 
-
 def _nickname_already_present(existing: str, nickname: str, tag_nick: str) -> bool:
     """Идемпотентность: экранированный и «сырой»/разэкранированный ник."""
     if existing == tag_nick or existing.startswith(f'{tag_nick} + '):
@@ -522,8 +494,7 @@ def _nickname_already_present(existing: str, nickname: str, tag_nick: str) -> bo
         return True
     return False
 
-
-def _merge_video_nickname(title: str, nickname: str) -> Optional[str]:
+def _merge_video_nickname(title: str, nickname: str) -> str | None:
     """Вклеивает ник по хвостовой внешней паре [] (имя дорожки не важно):
     Title → Title [Nick]; Title [Nokt] → Title [Nick + Nokt].
     Содержимое внутри [] сохраняется дословно; в нике \\ [ ] + экранируются.
@@ -549,8 +520,7 @@ def _merge_video_nickname(title: str, nickname: str) -> Optional[str]:
         return f'{base} [{merged_tag}]'
     return f'[{merged_tag}]'
 
-
-def _append_nickname_suffix(title: str, nickname: str) -> Optional[str]:
+def _append_nickname_suffix(title: str, nickname: str) -> str | None:
     """Простой суффикс для аудио Original (без merge): Title → Title [Nick]."""
     tag_nick = escape_nickname_for_tag(nickname)
     if title.endswith(f' [{tag_nick}]') or title.endswith(f' [{nickname}]'):
@@ -559,8 +529,7 @@ def _append_nickname_suffix(title: str, nickname: str) -> Optional[str]:
         return f'[{tag_nick}]'
     return f'{title} [{tag_nick}]'
 
-
-def resolve_language(track_type: str, title: str, current_language: str) -> Optional[str]:
+def resolve_language(track_type: str, title: str, current_language: str) -> str | None:
     """ISO 639-1 для --language, или None если флаг не ставить."""
     current = (current_language or '').strip()
     title = (title or '').strip()
@@ -579,8 +548,7 @@ def resolve_language(track_type: str, title: str, current_language: str) -> Opti
 
     return compress_language(current)
 
-
-def compress_language(code: str) -> Optional[str]:
+def compress_language(code: str) -> str | None:
     cleaned = (code or '').strip().lower().replace('_', '-')
     if not cleaned:
         return None
@@ -594,7 +562,6 @@ def compress_language(code: str) -> Optional[str]:
         return primary
     return None
 
-
 def _language_from_props(props: dict[str, Any]) -> str:
     language = str(props.get('language') or '').strip()
     if language:
@@ -604,7 +571,6 @@ def _language_from_props(props: dict[str, Any]) -> str:
         return ietf.split('-', 1)[0]
     return ''
 
-
 def _is_text_subtitle(track: dict[str, Any]) -> bool:
     props = _props(track)
     if props.get('text_subtitles') is True:
@@ -612,14 +578,12 @@ def _is_text_subtitle(track: dict[str, Any]) -> bool:
     codec_id = str(props.get('codec_id') or '')
     return codec_id.upper().startswith('S_TEXT/')
 
-
 def _display_dimensions(props: dict[str, Any]) -> str:
     for key in ('display_dimensions', 'pixel_dimensions'):
         value = str(props.get(key) or '').strip()
         if value and _DIMENSIONS_RE.match(value):
             return value
     return ''
-
 
 def _color_options(tid: int, props: dict[str, Any]) -> list[str]:
     options: list[str] = []

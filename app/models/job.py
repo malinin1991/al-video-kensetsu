@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
 from datetime import datetime, timezone
 import hashlib
 import os
@@ -12,7 +11,7 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _iso_utc(dt: Optional[datetime]) -> Optional[str]:
+def _iso_utc(dt: datetime | None) -> str | None:
     """ISO-8601 в UTC для API/UI (браузер форматирует в локальный TZ)."""
     if dt is None:
         return None
@@ -22,7 +21,6 @@ def _iso_utc(dt: Optional[datetime]) -> Optional[str]:
         dt = dt.astimezone(timezone.utc)
     return dt.isoformat().replace('+00:00', 'Z')
 
-
 class JobStatus(Enum):
     PLANNED = "planned"
     IN_PROGRESS = "in_progress"
@@ -30,22 +28,21 @@ class JobStatus(Enum):
     ERROR = "error"
     CANCELLED = "cancelled"
 
-
 @dataclass
 class Job:
     id: str
     filename: str
     original_path: str
-    output_path: Optional[str] = None
+    output_path: str | None = None
     status: JobStatus = JobStatus.PLANNED
     progress: float = 0.0
-    error_message: Optional[str] = None
+    error_message: str | None = None
     created_at: datetime = None
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
-    file_hash: Optional[str] = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    file_hash: str | None = None
     ffmpeg_params: dict = None
-    total_frames: Optional[int] = None
+    total_frames: int | None = None
     preset_id: str = "default"
     
     def __post_init__(self):

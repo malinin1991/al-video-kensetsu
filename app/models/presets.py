@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from typing import Dict, List, Optional
 import os
 import yaml
 
@@ -8,9 +7,9 @@ import yaml
 class AudioSettings:
     """Настройки аудио кодирования"""
     codec: str
-    bitrate: Optional[str] = None
-    sample_rate: Optional[str] = None
-    vbr: Optional[bool] = None  # VBR для Opus
+    bitrate: str | None = None
+    sample_rate: str | None = None
+    vbr: bool | None = None  # VBR для Opus
     
     def to_dict(self):
         return {
@@ -28,7 +27,6 @@ class AudioSettings:
             sample_rate=data.get('sample_rate'),
             vbr=data.get('vbr')
         )
-
 
 @dataclass
 class EncodingPreset:
@@ -132,7 +130,6 @@ class EncodingPreset:
         
         return params
 
-
 class PresetManager:
     """Менеджер пресетов кодирования"""
     
@@ -159,7 +156,7 @@ class PresetManager:
                         print(f"Найдены пресеты относительно app: {self.presets_dir}")
         else:
             self.presets_dir = presets_dir
-        self.presets: Dict[str, EncodingPreset] = {}
+        self.presets: dict[str, EncodingPreset] = {}
         self.load_presets()
     
     def load_presets(self):
@@ -269,11 +266,11 @@ class PresetManager:
         for preset in self.presets.values():
             self.save_preset(preset)
     
-    def get_preset(self, preset_id: str) -> Optional[EncodingPreset]:
+    def get_preset(self, preset_id: str) -> EncodingPreset | None:
         """Получает пресет по ID"""
         return self.presets.get(preset_id)
     
-    def get_all_presets(self) -> List[EncodingPreset]:
+    def get_all_presets(self) -> list[EncodingPreset]:
         """Получает все пресеты"""
         # Сортируем пресеты: "По умолчанию" всегда первый
         presets_list = list(self.presets.values())
@@ -310,7 +307,6 @@ class PresetManager:
             
             # Удаляем из памяти
             del self.presets[preset_id]
-
 
 # Глобальный экземпляр менеджера пресетов
 preset_manager = PresetManager()

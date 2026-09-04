@@ -18,7 +18,6 @@ import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Optional, Tuple
 
 DEFAULT_FFMPEG_DIR = "/app/ffmpeg"
 BTBN_BASE_URL = (
@@ -31,8 +30,8 @@ ARCH_TARBALLS = {
     "arm64": "ffmpeg-n9.0-latest-linuxarm64-gpl-9.0.tar.xz",
 }
 
-_resolved: Optional[Tuple[str, str]] = None
-_version_label: Optional[str] = None
+_resolved: tuple[str, str] | None = None
+_version_label: str | None = None
 
 
 def get_ffmpeg_version_label() -> str:
@@ -71,16 +70,13 @@ def get_ffmpeg_version_label() -> str:
         _version_label = 'ffmpeg'
     return _version_label
 
-
 def ffmpeg_dir() -> Path:
     return Path(os.environ.get("FFMPEG_DIR", DEFAULT_FFMPEG_DIR))
 
-
-def _truthy(value: Optional[str]) -> bool:
+def _truthy(value: str | None) -> bool:
     if value is None:
         return False
     return value.strip().lower() in ("1", "true", "yes", "on")
-
 
 def _is_usable_binary(path: Path) -> bool:
     if not path.is_file():
@@ -94,8 +90,7 @@ def _is_usable_binary(path: Path) -> bool:
         return False
     return os.access(path, os.X_OK)
 
-
-def resolve_bin_paths() -> Tuple[Path, Path]:
+def resolve_bin_paths() -> tuple[Path, Path]:
     """Возвращает ожидаемые пути к ffmpeg и ffprobe."""
     bin_dir = ffmpeg_dir() / "bin"
     ffmpeg_override = os.environ.get("FFMPEG_BIN", "").strip()
@@ -104,7 +99,6 @@ def resolve_bin_paths() -> Tuple[Path, Path]:
     ffmpeg = Path(ffmpeg_override) if ffmpeg_override else bin_dir / "ffmpeg"
     ffprobe = Path(ffprobe_override) if ffprobe_override else bin_dir / "ffprobe"
     return ffmpeg, ffprobe
-
 
 def get_ffmpeg_bin() -> str:
     """Путь к ffmpeg (после ensure_ffmpeg или из env/PATH)."""
@@ -115,7 +109,6 @@ def get_ffmpeg_bin() -> str:
         return str(ffmpeg)
     return os.environ.get("FFMPEG_BIN", "ffmpeg")
 
-
 def get_ffprobe_bin() -> str:
     """Путь к ffprobe (после ensure_ffmpeg или из env/PATH)."""
     if _resolved:
@@ -124,7 +117,6 @@ def get_ffprobe_bin() -> str:
     if _is_usable_binary(ffprobe):
         return str(ffprobe)
     return os.environ.get("FFPROBE_BIN", "ffprobe")
-
 
 def _arch_tarball_name() -> str:
     machine = platform.machine().lower()
@@ -139,18 +131,15 @@ def _arch_tarball_name() -> str:
         )
     return tarball
 
-
 def _download_url() -> str:
     override = os.environ.get("FFMPEG_DOWNLOAD_URL", "").strip()
     if override:
         return override
     return f"{BTBN_BASE_URL}/{_arch_tarball_name()}"
 
-
 def _chmod_executable(path: Path) -> None:
     mode = path.stat().st_mode
     path.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-
 
 def _extract_bins_from_tar(archive_path: Path, dest_bin: Path) -> None:
     dest_bin.mkdir(parents=True, exist_ok=True)
@@ -182,9 +171,8 @@ def _extract_bins_from_tar(archive_path: Path, dest_bin: Path) -> None:
                 shutil.copyfileobj(extracted, out_f)
             _chmod_executable(out_path)
 
-
 def _download_file(url: str, dest: Path, attempts: int = 5) -> None:
-    last_error: Optional[BaseException] = None
+    last_error: BaseException | None = None
     for attempt in range(1, attempts + 1):
         try:
             print(
@@ -211,7 +199,6 @@ def _download_file(url: str, dest: Path, attempts: int = 5) -> None:
         f"Не удалось скачать FFmpeg после {attempts} попыток: {url}. "
         f"Последняя ошибка: {last_error}"
     )
-
 
 def _download_and_install(ffmpeg: Path, ffprobe: Path) -> None:
     """Скачивает и устанавливает бинарники в каталог назначения."""
@@ -250,8 +237,7 @@ def _download_and_install(ffmpeg: Path, ffprobe: Path) -> None:
         flush=True,
     )
 
-
-def _resolve_from_path() -> Optional[Tuple[str, str]]:
+def _resolve_from_path() -> tuple[str, str] | None:
     """Ищет ffmpeg/ffprobe в PATH (локальный запуск вне контейнера)."""
     ffmpeg_name = os.environ.get("FFMPEG_BIN", "").strip() or "ffmpeg"
     ffprobe_name = os.environ.get("FFPROBE_BIN", "").strip() or "ffprobe"
@@ -264,8 +250,7 @@ def _resolve_from_path() -> Optional[Tuple[str, str]]:
         return found_ffmpeg, found_ffprobe
     return None
 
-
-def ensure_ffmpeg() -> Tuple[str, str]:
+def ensure_ffmpeg() -> tuple[str, str]:
     """
     Гарантирует наличие исполняемых ffmpeg и ffprobe.
 
@@ -326,7 +311,6 @@ def ensure_ffmpeg() -> Tuple[str, str]:
 
     _resolved = (str(ffmpeg), str(ffprobe))
     return _resolved
-
 
 if __name__ == "__main__":
     ensure_ffmpeg()

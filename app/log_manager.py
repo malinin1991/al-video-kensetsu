@@ -2,7 +2,7 @@ from collections import deque
 import re
 import threading
 import time
-from typing import Callable, Optional
+from typing import Callable
 
 
 class LogManager:
@@ -14,7 +14,7 @@ class LogManager:
         # Системный поток ограничен; логи заданий хранятся полностью.
         self.system_logs: deque = deque(maxlen=max_system_logs)
         self.job_logs: dict[str, list] = {}
-        self._emit_callback: Optional[Callable[[dict], None]] = None
+        self._emit_callback: Callable[[dict], None] | None = None
 
     def set_emit_callback(self, callback: Callable[[dict], None]):
         """Регистрирует callback для WebSocket-рассылки новых записей."""
@@ -33,7 +33,7 @@ class LogManager:
     def _make_entry(
         self,
         stream: str,
-        job_id: Optional[str],
+        job_id: str | None,
         message: str,
         level: str = 'INFO',
         logger_name: str = 'system',
@@ -89,7 +89,7 @@ class LogManager:
         return self.add_system_log(message, level, logger_name)
 
     @staticmethod
-    def _extract_job_id(message: str) -> Optional[str]:
+    def _extract_job_id(message: str) -> str | None:
         ffmpeg_prefix = re.match(r'FFmpeg\s+([a-f0-9-]+)', message, re.IGNORECASE)
         if ffmpeg_prefix:
             return ffmpeg_prefix.group(1)
@@ -100,14 +100,14 @@ class LogManager:
 
         return None
 
-    def get_system_logs(self, limit: Optional[int] = None) -> list:
+    def get_system_logs(self, limit: int | None = None) -> list:
         with self._lock:
             logs = list(self.system_logs)
         if limit is None:
             return logs
         return logs[-limit:]
 
-    def get_job_logs(self, job_id: str, limit: Optional[int] = None) -> list:
+    def get_job_logs(self, job_id: str, limit: int | None = None) -> list:
         with self._lock:
             if job_id not in self.job_logs:
                 return []
@@ -136,6 +136,5 @@ class LogManager:
         """Полностью удаляет логи задания (при удалении задания из системы)."""
         with self._lock:
             self.job_logs.pop(job_id, None)
-
 
 log_manager = LogManager()

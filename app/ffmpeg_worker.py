@@ -5,7 +5,8 @@ import os
 import re
 import copy
 import json
-from typing import Callable, Optional
+from typing import Callable
+
 from app.models.job import Job, JobStatus, utc_now
 from app.file_utils import cleanup_file
 from app.internal_source import (
@@ -27,7 +28,6 @@ from app.mkvmerge_remux import (
     write_option_file,
 )
 
-
 VALID_X265_TUNES = frozenset({
     'psnr', 'ssim', 'grain', 'animation',
     'fastdecode', 'fast-decode', 'zerolatency', 'zero-latency',
@@ -35,7 +35,7 @@ VALID_X265_TUNES = frozenset({
 
 
 class FFmpegWorker:
-    def __init__(self, progress_callback: Optional[Callable] = None, log_callback: Optional[Callable] = None, status_callback: Optional[Callable] = None):
+    def __init__(self, progress_callback: Callable | None = None, log_callback: Callable | None = None, status_callback: Callable | None = None):
         self.progress_callback = progress_callback
         self.log_callback = log_callback
         self.status_callback = status_callback
@@ -297,7 +297,7 @@ class FFmpegWorker:
             return encode_partial_path(job.output_path)
         return job.output_path
 
-    def _build_ffmpeg_command(self, job: Job, output_path: Optional[str] = None) -> list:
+    def _build_ffmpeg_command(self, job: Job, output_path: str | None = None) -> list:
         """Строит команду FFmpeg на основе параметров задания (без тегов/метаинфы)."""
         params = copy.deepcopy(job.ffmpeg_params)
         dest_path = output_path if output_path is not None else self._encode_output_path(job)
@@ -524,7 +524,7 @@ class FFmpegWorker:
         cleanup_file(json_path)
         logger.main_logger.info(f'Remux завершён для {job.id}: {job.output_path}')
 
-    def _run_ffmpeg(self, job: Job, cmd: list, encode_path: Optional[str] = None):
+    def _run_ffmpeg(self, job: Job, cmd: list, encode_path: str | None = None):
         """Запускает FFmpeg и отслеживает прогресс"""
         process = None
         try:
@@ -627,7 +627,7 @@ class FFmpegWorker:
                 if self.log_callback:
                     self.log_callback(job.id, f"Ошибка выполнения: {str(e)}")
     
-    def _parse_progress(self, line: str, job_id: str) -> Optional[float]:
+    def _parse_progress(self, line: str, job_id: str) -> float | None:
         """Парсит прогресс из строки вывода FFmpeg"""
         try:
             # Логируем все строки FFmpeg для отладки
@@ -724,7 +724,7 @@ class FFmpegWorker:
         
         return None
     
-    def get_job_status(self, job_id: str) -> Optional[Job]:
+    def get_job_status(self, job_id: str) -> Job | None:
         """Возвращает статус задания"""
         with self._lock:
             return self.running_jobs.get(job_id)

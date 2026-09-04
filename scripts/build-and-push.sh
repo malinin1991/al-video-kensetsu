@@ -87,6 +87,7 @@ fi
 
 CACHE_FLAG=()
 [[ "$NO_CACHE" -eq 1 ]] && CACHE_FLAG=(--no-cache)
+# bash 3.2 (macOS) + set -u: пустой ${arr[@]} считается unbound
 
 if [[ "$MULTIARCH" -eq 1 || "${MULTIARCH:-0}" == "1" ]]; then
     echo "Мультиарх-сборка..."
@@ -99,14 +100,14 @@ if [[ "$MULTIARCH" -eq 1 || "${MULTIARCH:-0}" == "1" ]]; then
         -f "$DOCKERFILE"
         -t "$FULL_IMAGE"
         "${METADATA_ARGS[@]}"
-        "${CACHE_FLAG[@]}"
+        ${CACHE_FLAG[@]+"${CACHE_FLAG[@]}"}
         .
     )
     [[ "$BUILD_ONLY" -eq 0 ]] && BUILDX_ARGS+=(--push)
     docker "${BUILDX_ARGS[@]}"
 else
     echo "Локальная сборка..."
-    docker build "${CACHE_FLAG[@]}" -f "$DOCKERFILE" -t "$FULL_IMAGE" "${METADATA_ARGS[@]}" .
+    docker build ${CACHE_FLAG[@]+"${CACHE_FLAG[@]}"} -f "$DOCKERFILE" -t "$FULL_IMAGE" "${METADATA_ARGS[@]}" .
     if [[ "$BUILD_ONLY" -eq 0 ]]; then
         echo "Публикация образа..."
         docker push "$FULL_IMAGE"

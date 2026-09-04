@@ -1,7 +1,6 @@
 import logging
 import os
 from datetime import datetime
-from typing import Optional
 
 from app.log_manager import log_manager
 
@@ -15,7 +14,6 @@ class LogManagerHandler(logging.Handler):
             log_manager.add_log(message, record.levelname)
         except Exception:
             self.handleError(record)
-
 
 class VideoEncoderLogger:
     """Логгер для системы кодирования видео"""
@@ -107,7 +105,7 @@ class VideoEncoderLogger:
             f"(задание: {job_id}, хеш: {file_hash[:16]}...)"
         )
     
-    def log_upload_error(self, filename: str, error: str, job_id: Optional[str] = None):
+    def log_upload_error(self, filename: str, error: str, job_id: str | None = None):
         """Логирует ошибку загрузки"""
         job_info = f" (задание: {job_id})" if job_id else ""
         self.upload_logger.error(f"Ошибка загрузки {filename}{job_info}: {error}")

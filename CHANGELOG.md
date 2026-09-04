@@ -39,6 +39,7 @@
 - **FFmpeg Worker**: Добавлены ограничения на количество потоков для предотвращения ошибок x265
 - **x265 параметры**: Исправлена логика установки frame-threads с учетом ограничений x265
 - **Python 3.15 prep**: явное `encoding='utf-8'` при чтении `build_number.txt` (PEP 686)
+- **Typing**: `Optional`/`Dict`/`List`/`Tuple` заменены на `X | None` и встроенные generics (`dict`/`list`/`tuple`)
 
 ## [0.9.2] - 2025-10-22
 

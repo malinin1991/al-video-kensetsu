@@ -259,10 +259,10 @@ def build_mkvmerge_options(
 
     # Без --ui-language: Debian mkvtoolnix без перевода ru падает с кодом 2.
     options: list[str] = [
-        '--priority', 'lower',
         '--output', output_abs,
         '--no-track-tags',
         '--no-global-tags',
+        '--enable-legacy-font-mime-types',
     ]
 
     tracks = _regular_tracks(identify)

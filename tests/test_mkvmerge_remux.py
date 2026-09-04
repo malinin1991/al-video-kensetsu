@@ -202,13 +202,14 @@ class TestBuildMkvmergeOptions:
         output = tmp_path / 'out.mkv'
         args = _build(encoded=str(encoded), output=str(output))
 
-        assert args[:4] == [
-            '--priority', 'lower',
+        assert args[:2] == [
             '--output', str(output.resolve()),
         ]
+        assert '--priority' not in args
         assert '--ui-language' not in args
         assert '--no-track-tags' in args
         assert '--no-global-tags' in args
+        assert '--enable-legacy-font-mime-types' in args
         assert '--disable-track-statistics-tags' not in args
         assert '(' in args and ')' in args
         assert str(encoded.resolve()) in args

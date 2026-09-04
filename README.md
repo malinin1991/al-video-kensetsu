@@ -1,6 +1,6 @@
 # Система пакетного кодирования видео
 
-Веб-система для пакетного кодирования видео с использованием Python 3.13, Flask, Bootstrap, Docker и FFmpeg.
+Веб-система для пакетного кодирования видео с использованием Python 3.14, Flask, Bootstrap, Docker и FFmpeg.
 
 ## Возможности
 
@@ -14,7 +14,7 @@
 
 ## Технологии
 
-- **Backend**: Python 3.13, Flask, Flask-SocketIO
+- **Backend**: Python 3.14, Flask, Flask-SocketIO
 - **Frontend**: Bootstrap 5, JavaScript, WebSocket
 - **Кодирование**: FFmpeg с поддержкой H.265/HEVC
 - **Конфигурация**: YAML пресеты для удобного управления настройками

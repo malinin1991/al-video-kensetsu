@@ -3,6 +3,10 @@ import os
 import yaml
 
 
+GROUP_ORDER = {'rip': 0, 'remux': 1}
+DEFAULT_PRESET_IDS = frozenset({'default', 'bd_default'})
+
+
 @dataclass
 class AudioSettings:
     """Настройки аудио кодирования"""
@@ -34,6 +38,7 @@ class EncodingPreset:
     id: str
     name: str
     description: str
+    group: str = "rip"
     video_codec: str = "libx265"
     preset: str = "slow"
     crf: str = "23"
@@ -52,12 +57,19 @@ class EncodingPreset:
     def __post_init__(self):
         if self.audio_settings is None:
             self.audio_settings = AudioSettings(codec="copy")
+        if self.group not in GROUP_ORDER:
+            self.group = "rip"
     
-    def to_dict(self):
-        return {
+    def uses_fdk_aac(self) -> bool:
+        codec = (self.audio_settings.codec or '') if self.audio_settings else ''
+        return codec == 'libfdk_aac'
+
+    def to_dict(self, available: bool | None = None):
+        data = {
             'id': self.id,
             'name': self.name,
             'description': self.description,
+            'group': self.group,
             'video_codec': self.video_codec,
             'preset': self.preset,
             'crf': self.crf,
@@ -73,6 +85,9 @@ class EncodingPreset:
             'subtitle_codec': self.subtitle_codec,
             'data_codec': self.data_codec
         }
+        if available is not None:
+            data['available'] = available
+        return data
     
     @classmethod
     def from_dict(cls, data: dict):
@@ -81,9 +96,10 @@ class EncodingPreset:
             id=data.get('id', ''),
             name=data.get('name', ''),
             description=data.get('description', ''),
+            group=data.get('group', 'rip'),
             video_codec=data.get('video_codec', 'libx265'),
-            preset=data.get('preset', 'slow'),
-            crf=data.get('crf', '23'),
+            preset=str(data.get('preset', 'slow')),
+            crf=str(data.get('crf', '23')),
             pixel_format=data.get('pixel_format', 'yuv420p10le'),
             x265_params=data.get('x265_params', 'level=5.1:ref=6'),
             tune=data.get('tune', 'animation'),
@@ -129,6 +145,10 @@ class EncodingPreset:
                 params['audio_vbr'] = str(self.audio_settings.vbr).lower()
         
         return params
+
+    def display_label(self) -> str:
+        """Подпись для UI и списка заданий: group / name."""
+        return f"{self.group} / {self.name}"
 
 class PresetManager:
     """Менеджер пресетов кодирования"""
@@ -200,69 +220,125 @@ class PresetManager:
     
     def create_default_presets(self):
         """Создает пресеты по умолчанию"""
-        # Создаем директорию если её нет
         os.makedirs(self.presets_dir, exist_ok=True)
-        
-        # Пресет по умолчанию (текущие настройки)
-        default_preset = EncodingPreset(
-            id="default",
-            name="По умолчанию",
-            description="Стандартные настройки для кодирования HEVC",
+
+        rip_common = dict(
             video_codec="libx265",
             preset="slow",
             crf="23",
             pixel_format="yuv420p10le",
             x265_params="level=5.1:ref=6",
             tune="animation",
-            audio_settings=AudioSettings(codec="copy"),
-            output_format="matroska"
+            output_format="matroska",
+            group="rip",
         )
-        
-        # Пресет с AAC аудио
-        aac_preset = EncodingPreset(
-            id="aac_audio",
-            name="HEVC + AAC",
-            description="HEVC видео с AAC аудио",
+        remux_common = dict(
             video_codec="libx265",
-            preset="slow",
-            crf="23",
+            preset="slower",
+            crf="21",
             pixel_format="yuv420p10le",
             x265_params="level=5.1:ref=6",
             tune="animation",
-            audio_settings=AudioSettings(
-                codec="aac",
-                bitrate="128k",
-                sample_rate="48000"
+            output_format="matroska",
+            group="remux",
+        )
+
+        presets = [
+            EncodingPreset(
+                id="default",
+                name="По умолчанию",
+                description="WEBRip / HDTV / BDRip — HEVC CRF 23, slow, аудио copy",
+                audio_settings=AudioSettings(codec="copy"),
+                **rip_common,
             ),
-            output_format="matroska"
-        )
-        
-        # Пресет с Opus аудио
-        opus_preset = EncodingPreset(
-            id="opus_audio",
-            name="HEVC + Opus",
-            description="HEVC видео с Opus аудио",
-            video_codec="libx265",
-            preset="slow",
-            crf="23",
-            pixel_format="yuv420p10le",
-            x265_params="level=5.1:ref=6",
-            tune="animation",
-            audio_settings=AudioSettings(
-                codec="libopus",
-                bitrate="128k",
-                sample_rate="48000"
+            EncodingPreset(
+                id="aac_audio",
+                name="HEVC + AAC",
+                description="HEVC видео с AAC аудио 192k",
+                audio_settings=AudioSettings(
+                    codec="aac", bitrate="192k", sample_rate="48000"
+                ),
+                **rip_common,
             ),
-            output_format="matroska"
-        )
-        
-        self.presets = {
-            "default": default_preset,
-            "aac_audio": aac_preset,
-            "opus_audio": opus_preset
-        }
-        
-        # Сохраняем каждый пресет в отдельный файл
+            EncodingPreset(
+                id="aac_fdk_audio",
+                name="HEVC + AAC FDK",
+                description="HEVC видео с AAC через libfdk_aac 192k",
+                audio_settings=AudioSettings(
+                    codec="libfdk_aac", bitrate="192k", sample_rate="48000"
+                ),
+                **rip_common,
+            ),
+            EncodingPreset(
+                id="opus_audio",
+                name="HEVC + Opus",
+                description="HEVC видео с Opus аудио",
+                audio_settings=AudioSettings(
+                    codec="libopus", bitrate="160k", sample_rate="48000", vbr=True
+                ),
+                **rip_common,
+            ),
+            EncodingPreset(
+                id="video_only",
+                name="Только видео",
+                description="Видеоряд без аудио, субтитров и других дорожек",
+                audio_settings=AudioSettings(codec=None),
+                audio_map=None,
+                subtitle_map=None,
+                data_map=None,
+                subtitle_codec=None,
+                data_codec=None,
+                **rip_common,
+            ),
+            EncodingPreset(
+                id="bd_default",
+                name="По умолчанию",
+                description="BD / remux — HEVC CRF 21, slower, аудио copy",
+                audio_settings=AudioSettings(codec="copy"),
+                **remux_common,
+            ),
+            EncodingPreset(
+                id="bd_opus_audio",
+                name="HEVC + Opus",
+                description="BD / remux — HEVC CRF 21, slower, Opus аудио",
+                audio_settings=AudioSettings(
+                    codec="libopus", bitrate="160k", sample_rate="48000", vbr=True
+                ),
+                **remux_common,
+            ),
+            EncodingPreset(
+                id="bd_aac_audio",
+                name="HEVC + AAC",
+                description="BD / remux — HEVC CRF 21, slower, AAC 192k",
+                audio_settings=AudioSettings(
+                    codec="aac", bitrate="192k", sample_rate="48000"
+                ),
+                **remux_common,
+            ),
+            EncodingPreset(
+                id="bd_aac_fdk_audio",
+                name="HEVC + AAC FDK",
+                description="BD / remux — HEVC CRF 21, slower, libfdk_aac 192k",
+                audio_settings=AudioSettings(
+                    codec="libfdk_aac", bitrate="192k", sample_rate="48000"
+                ),
+                **remux_common,
+            ),
+            EncodingPreset(
+                id="bd_video_only",
+                name="Только видео",
+                description="BD / remux — только видео, CRF 21, slower",
+                audio_settings=AudioSettings(codec=None),
+                audio_map=None,
+                subtitle_map=None,
+                data_map=None,
+                subtitle_codec=None,
+                data_codec=None,
+                **remux_common,
+            ),
+        ]
+
+        self.presets = {p.id: p for p in presets}
         for preset in self.presets.values():
             self.save_preset(preset)
     
@@ -271,11 +347,16 @@ class PresetManager:
         return self.presets.get(preset_id)
     
     def get_all_presets(self) -> list[EncodingPreset]:
-        """Получает все пресеты"""
-        # Сортируем пресеты: "По умолчанию" всегда первый
+        """Получает все пресеты (rip, затем remux; default/bd_default первыми в группе)."""
         presets_list = list(self.presets.values())
-        presets_list.sort(key=lambda x: (x.id != 'default', x.name))
-        
+        presets_list.sort(
+            key=lambda x: (
+                GROUP_ORDER.get(x.group, 99),
+                x.id not in DEFAULT_PRESET_IDS,
+                x.name,
+                x.id,
+            )
+        )
         return presets_list
     
     def reload_presets(self):

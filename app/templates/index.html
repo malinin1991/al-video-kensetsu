@@ -349,6 +349,7 @@
                                 <select class="form-select" id="audioCodec" name="audio_codec">
                                     <option value="copy" selected>Копировать</option>
                                     <option value="aac">AAC</option>
+                                    <option value="libfdk_aac" id="audioCodecFdk" disabled>AAC FDK (libfdk_aac)</option>
                                     <option value="opus">Opus (160k VBR)</option>
                                     <option value="remove">❌ Удалить</option>
                                 </select>
@@ -589,7 +590,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const presetSelect = document.getElementById('presetSelect');
     if (presetSelect) {
         presetSelect.addEventListener('change', function() {
-            loadPresetSettings(this.value);
+            onPresetSelectChange(this.value);
         });
     }
     
@@ -689,27 +690,50 @@ function loadPresets() {
                 // Очищаем только если есть пресеты для загрузки
                 if (presets && presets.length > 0) {
                     presetSelect.innerHTML = '';
-                    
-                    // Сортируем пресеты: "По умолчанию" всегда первый
-                    const sortedPresets = presets.sort((a, b) => {
-                        if (a.id === 'default') return -1;
-                        if (b.id === 'default') return 1;
-                        return a.name.localeCompare(b.name);
-                    });
-                    
-                    sortedPresets.forEach((preset, index) => {
-                        const option = document.createElement('option');
-                        option.value = preset.id;
-                        option.textContent = preset.name;
-                        presetSelect.appendChild(option);
-                        
-                        // Заполняем глобальный кеш пресетов для использования в других местах
-                        if (window.presetsCache) {
-                            window.presetsCache[preset.id] = preset.name;
-                        }
+
+                    const groupOrder = ['rip', 'remux'];
+                    const groupLabels = { rip: 'rip', remux: 'remux' };
+                    const byGroup = {};
+                    presets.forEach((preset) => {
+                        const g = preset.group || 'rip';
+                        if (!byGroup[g]) byGroup[g] = [];
+                        byGroup[g].push(preset);
                     });
 
-                    loadPresetSettings('default');
+                    const sortedGroupKeys = [
+                        ...groupOrder.filter((g) => byGroup[g]),
+                        ...Object.keys(byGroup).filter((g) => !groupOrder.includes(g)).sort(),
+                    ];
+
+                    let firstAvailableId = null;
+                    sortedGroupKeys.forEach((groupKey) => {
+                        const optgroup = document.createElement('optgroup');
+                        optgroup.label = groupLabels[groupKey] || groupKey;
+                        byGroup[groupKey].forEach((preset) => {
+                            const option = document.createElement('option');
+                            option.value = preset.id;
+                            option.textContent = preset.name;
+                            const available = preset.available !== false;
+                            if (!available) {
+                                option.disabled = true;
+                                option.textContent = `${preset.name} (недоступен)`;
+                            } else if (!firstAvailableId) {
+                                firstAvailableId = preset.id;
+                            }
+                            optgroup.appendChild(option);
+
+                            if (window.presetsCache) {
+                                const group = preset.group || 'rip';
+                                window.presetsCache[preset.id] = `${group} / ${preset.name}`;
+                            }
+                        });
+                        presetSelect.appendChild(optgroup);
+                    });
+
+                    updateFdkCodecOption(presets);
+                    const startId = firstAvailableId || 'default';
+                    presetSelect.value = startId;
+                    loadPresetSettings(startId);
                 }
             }
         })
@@ -727,6 +751,38 @@ function loadPresets() {
                 presetSelect.appendChild(errorOption);
             }
         });
+}
+
+function updateFdkCodecOption(presets) {
+    const fdkOption = document.getElementById('audioCodecFdk');
+    if (!fdkOption) return;
+    let hasFdk = false;
+    if (Array.isArray(presets)) {
+        hasFdk = presets.some(
+            (p) => p.audio_settings
+                && p.audio_settings.codec === 'libfdk_aac'
+                && p.available !== false
+        );
+    }
+    fdkOption.disabled = !hasFdk;
+}
+
+function onPresetSelectChange(presetId) {
+    const presetSelect = document.getElementById('presetSelect');
+    if (!presetSelect) return;
+    const selected = presetSelect.options[presetSelect.selectedIndex];
+    if (selected && selected.disabled) {
+        // Сброс на первый доступный
+        for (let i = 0; i < presetSelect.options.length; i++) {
+            const opt = presetSelect.options[i];
+            if (opt.value && !opt.disabled) {
+                presetSelect.value = opt.value;
+                presetId = opt.value;
+                break;
+            }
+        }
+    }
+    loadPresetSettings(presetId);
 }
 
 function loadPresetSettings(presetId) {

@@ -1,6 +1,7 @@
 id: default
 name: По умолчанию
-description: Стандартные настройки для кодирования HEVC
+group: rip
+description: WEBRip / HDTV / BDRip — HEVC CRF 23, slow, аудио copy
 
 video_codec: libx265
 preset: slow

@@ -1,5 +1,6 @@
 id: video_only
 name: Только видео
+group: rip
 description: Видеоряд без аудио, субтитров и других дорожек
 
 video_codec: libx265
@@ -21,4 +22,3 @@ subtitle_map: null
 data_map: null
 subtitle_codec: null
 data_codec: null
-

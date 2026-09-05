@@ -1,5 +1,6 @@
 id: opus_audio
 name: HEVC + Opus
+group: rip
 description: HEVC видео с Opus аудио
 
 video_codec: libx265

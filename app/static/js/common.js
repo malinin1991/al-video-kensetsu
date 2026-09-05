@@ -111,13 +111,16 @@ function getPresetDisplayName(job) {
     
     // Словарь известных пресетов (на случай, если кеш еще не загружен)
     const knownPresets = {
-        'default': 'По умолчанию',
-        'high_quality': 'Высокое качество',
-        'fast_encode': 'Быстрое кодирование',
-        'anime_optimized': 'Оптимизировано для аниме',
-        'aac_audio': 'AAC аудио',
-        'opus_audio': 'Opus аудио',
-        'video_only': 'Только видео'
+        'default': 'rip / По умолчанию',
+        'aac_audio': 'rip / HEVC + AAC',
+        'aac_fdk_audio': 'rip / HEVC + AAC FDK',
+        'opus_audio': 'rip / HEVC + Opus',
+        'video_only': 'rip / Только видео',
+        'bd_default': 'remux / По умолчанию',
+        'bd_opus_audio': 'remux / HEVC + Opus',
+        'bd_aac_audio': 'remux / HEVC + AAC',
+        'bd_aac_fdk_audio': 'remux / HEVC + AAC FDK',
+        'bd_video_only': 'remux / Только видео'
     };
     
     return knownPresets[job.preset_id] || job.preset_id || 'По умолчанию';

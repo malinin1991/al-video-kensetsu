@@ -10,11 +10,20 @@ LABEL org.opencontainers.image.created="${BUILD_TIME}" \
 
 # Системные пакеты:
 # curl — healthcheck; ca-certificates — HTTPS для runtime-скачивания FFmpeg;
-# mkvtoolnix — CLI (mkvmerge), без GUI
+# mkvtoolnix — CLI (mkvmerge) из официального репо mkvtoolnix.download, без GUI.
+# Базовый образ python:3.14-slim = Debian trixie; suite репо pin'им явно (trixie).
+# Ключ APT кладётся AS-IS (официальная инструкция MKVToolNix, без gpg --dearmor).
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
+    && mkdir -p /etc/apt/keyrings \
+    && curl -fsSL -o /etc/apt/keyrings/gpg-pub-moritzbunkus.gpg \
+        https://mkvtoolnix.download/gpg-pub-moritzbunkus.gpg \
+    && printf 'deb [signed-by=/etc/apt/keyrings/gpg-pub-moritzbunkus.gpg] https://mkvtoolnix.download/debian/ trixie main\n' \
+        > /etc/apt/sources.list.d/mkvtoolnix.list \
+    && apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         mkvtoolnix \
     && rm -rf /var/lib/apt/lists/*
 

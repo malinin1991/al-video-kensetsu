@@ -27,6 +27,10 @@ FFmpeg **не скачивается во время `docker build`**. Обра�
 
 Мультиарх-сборка образа больше не тянет разные tarball по `TARGETARCH` на этапе build — загрузка происходит уже в контейнере нужной платформы.
 
+## MKVToolNix
+
+Пакет `mkvtoolnix` (CLI `mkvmerge`) ставится в Dockerfile из официального репозитория **mkvtoolnix.download** (ключ Moritz Bunkus AS-IS в `/etc/apt/keyrings/`, suite **trixie** — как у `python:3.14-slim`), а не из зеркала Debian. Версия mkvmerge в контейнере — upstream, не дистро-пакет.
+
 ## Сборка для разных платформ
 
 ### Локальная сборка (рекомендуется)
@@ -59,7 +63,7 @@ docker buildx build --builder=container \
 
 # Windows PowerShell (или просто .\scripts\publish.ps1)
 ```powershell
-.\scripts\publish.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\publish.ps1
 ```
 
 ### Сборка для конкретной архитектуры

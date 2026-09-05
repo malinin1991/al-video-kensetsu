@@ -31,21 +31,94 @@ ARCH_TARBALLS = {
 }
 
 _resolved: tuple[str, str] | None = None
+# Кэш FDK/версии привязан к (resolved path, mtime) — сброс при смене бинарника
+_ffmpeg_probe_cache_key: tuple[str, float | None] | None = None
 _version_label: str | None = None
+_version_token: str | None = None
+_libfdk_aac_available: bool | None = None
+_ffmpeg_build_info: dict | None = None
 
 
-def get_ffmpeg_version_label() -> str:
+def _ffmpeg_probe_identity() -> tuple[str, float | None]:
+    path = get_ffmpeg_bin()
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        mtime = None
+    return path, mtime
+
+
+def _invalidate_ffmpeg_probe_cache_if_stale() -> None:
+    """Сбрасывает кэш детекции, если путь/mtime ffmpeg изменились."""
+    global _ffmpeg_probe_cache_key, _version_label, _version_token
+    global _libfdk_aac_available, _ffmpeg_build_info
+    identity = _ffmpeg_probe_identity()
+    if _ffmpeg_probe_cache_key != identity:
+        _ffmpeg_probe_cache_key = identity
+        _version_label = None
+        _version_token = None
+        _libfdk_aac_available = None
+        _ffmpeg_build_info = None
+
+
+def clear_ffmpeg_probe_cache() -> None:
+    """Принудительно сбрасывает кэш версии/FDK/build info (для тестов)."""
+    global _ffmpeg_probe_cache_key, _version_label, _version_token
+    global _libfdk_aac_available, _ffmpeg_build_info
+    _ffmpeg_probe_cache_key = None
+    _version_label = None
+    _version_token = None
+    _libfdk_aac_available = None
+    _ffmpeg_build_info = None
+
+
+def has_libfdk_aac() -> bool:
+    """True, если в текущем FFmpeg есть энкодер libfdk_aac."""
+    global _libfdk_aac_available
+    _invalidate_ffmpeg_probe_cache_if_stale()
+    if _libfdk_aac_available is not None:
+        return _libfdk_aac_available
+
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            [get_ffmpeg_bin(), '-encoders'],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        output = (result.stdout or '') + (result.stderr or '')
+        # Строка вида: " A....D libfdk_aac ..."
+        _libfdk_aac_available = any(
+            line.split() and 'libfdk_aac' in line.split()
+            for line in output.splitlines()
+        )
+    except Exception:
+        _libfdk_aac_available = False
+    return _libfdk_aac_available
+
+
+def get_ffmpeg_build_info() -> dict:
     """
-    Короткая метка для metadata (encoding_tool / Writing application).
-    Пример: «ffmpeg n9.0.1-6-g9d4ca21220-20260822»
+    Разбор вывода `ffmpeg -version`: метка версии, configuration, версии libav*.
+    Кэш сбрасывается при смене пути/mtime бинарника.
     """
-    global _version_label
-    if _version_label is not None:
-        return _version_label
+    global _ffmpeg_build_info, _version_label, _version_token
+    _invalidate_ffmpeg_probe_cache_if_stale()
+    if _ffmpeg_build_info is not None:
+        return _ffmpeg_build_info
 
     import re
     import subprocess
 
+    info = {
+        'version_token': None,
+        'version_label': None,
+        'configuration': None,
+        'libraries': {},
+    }
     try:
         result = subprocess.run(
             [get_ffmpeg_bin(), '-version'],
@@ -54,21 +127,87 @@ def get_ffmpeg_version_label() -> str:
             timeout=5,
             check=False,
         )
-        if result.returncode == 0 and result.stdout:
-            first = result.stdout.splitlines()[0].strip()
-            # ffmpeg version n9.0.1-... Copyright ...
+        if result.returncode != 0 or not result.stdout:
+            _ffmpeg_build_info = info
+            return info
+
+        lines = result.stdout.splitlines()
+        if lines:
+            first = lines[0].strip()
             match = re.search(r'ffmpeg\s+version\s+(\S+)', first, re.IGNORECASE)
             if match:
-                _version_label = f'ffmpeg {match.group(1)}'
-            elif 'version' in first.lower():
-                _version_label = first.split('Copyright')[0].strip()
+                token = match.group(1)
+                info['version_token'] = token
+                info['version_label'] = f'ffmpeg {token}'
             else:
-                _version_label = first[:80]
-        else:
-            _version_label = 'ffmpeg'
+                fallback = first.split('Copyright')[0].strip()[:120]
+                info['version_label'] = fallback
+                info['version_token'] = (
+                    fallback[7:].strip()
+                    if fallback.lower().startswith('ffmpeg ')
+                    else fallback
+                )
+
+        for line in lines:
+            stripped = line.strip()
+            if stripped.lower().startswith('configuration:'):
+                info['configuration'] = stripped.split(':', 1)[1].strip()
+                continue
+            lib_match = re.match(
+                r'(libavutil|libavcodec|libavformat|libavdevice|libavfilter|'
+                r'libswscale|libswresample|libpostproc)\s+(.+)',
+                stripped,
+            )
+            if lib_match:
+                info['libraries'][lib_match.group(1)] = lib_match.group(2).strip()
     except Exception:
-        _version_label = 'ffmpeg'
+        pass
+
+    _ffmpeg_build_info = info
+    if info.get('version_label'):
+        _version_label = info['version_label']
+    if info.get('version_token'):
+        _version_token = info['version_token']
+    return info
+
+
+def get_ffmpeg_version_label() -> str:
+    """
+    Полная метка для UI / metadata (encoding_tool / Writing application).
+    Пример: «ffmpeg n9.0.1-6-g9d4ca21220-20260822»
+    """
+    global _version_label
+    _invalidate_ffmpeg_probe_cache_if_stale()
+    if _version_label is not None:
+        return _version_label
+
+    info = get_ffmpeg_build_info()
+    _version_label = info.get('version_label') or 'ffmpeg'
     return _version_label
+
+
+def get_ffmpeg_version_token() -> str:
+    """
+    Короткий токен версии без префикса «ffmpeg ».
+    Пример: «n9.0.1-6-g9d4ca21220-20260822»
+    """
+    global _version_token
+    _invalidate_ffmpeg_probe_cache_if_stale()
+    if _version_token is not None:
+        return _version_token
+
+    info = get_ffmpeg_build_info()
+    token = info.get('version_token')
+    if token:
+        _version_token = token
+        return _version_token
+
+    label = info.get('version_label') or get_ffmpeg_version_label()
+    if label.lower().startswith('ffmpeg '):
+        _version_token = label[7:].strip() or 'unknown'
+    else:
+        _version_token = label or 'unknown'
+    return _version_token
 
 def ffmpeg_dir() -> Path:
     return Path(os.environ.get("FFMPEG_DIR", DEFAULT_FFMPEG_DIR))

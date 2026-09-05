@@ -42,14 +42,20 @@ project/
 │       ├── index.html       # Главная страница
 │       └── logs.html        # Страница логов
 ├── presets/                 # YAML пресеты кодирования
-│   ├── default.yaml         # По умолчанию
-│   ├── aac_audio.yaml       # HEVC + AAC
-│   ├── opus_audio.yaml      # HEVC + Opus
-│   ├── high_quality.yaml    # Высокое качество
-│   ├── fast_encode.yaml     # Быстрое кодирование
-│   └── anime_optimized.yaml # Оптимизация для аниме
+│   ├── default.yaml         # rip: по умолчанию
+│   ├── aac_audio.yaml       # rip: HEVC + AAC
+│   ├── aac_fdk_audio.yaml   # rip: HEVC + AAC FDK
+│   ├── opus_audio.yaml      # rip: HEVC + Opus
+│   ├── video_only.yaml      # rip: только видео
+│   ├── bd_default.yaml      # remux: по умолчанию
+│   ├── bd_aac_audio.yaml    # remux: HEVC + AAC
+│   ├── bd_aac_fdk_audio.yaml
+│   ├── bd_opus_audio.yaml
+│   └── bd_video_only.yaml
+├── docs/
+│   └── API.md               # Спецификация HTTP API для интеграций
 ├── docker/
-│   ├── Dockerfile           # Docker образ (без FFmpeg в build)
+│   ├── Dockerfile           # Docker образ (без FFmpeg в build; MKVToolNix из официального APT)
 │   └── entrypoint.sh        # PATH + bootstrap FFmpeg
 ├── docker-compose.yml       # Docker Compose конфигурация
 ├── requirements.txt         # Python зависимости
@@ -170,6 +176,8 @@ python -m app.main
 
 ## API Endpoints
 
+Полная спецификация (batch, пресеты, коды ответов, примеры curl): **[docs/API.md](docs/API.md)**.
+
 ### Основные маршруты
 
 - `GET /` - Главная страница
@@ -180,15 +188,31 @@ python -m app.main
 
 - `GET /api/jobs` - Список всех заданий
 - `GET /api/jobs/<job_id>` - Конкретное задание
-- `POST /api/upload` - Загрузка файла
+- `POST /api/upload` - Загрузка файла или пачки (`file` / `files` + `preset_id`)
+- `POST /api/internal/encode` - Кодирование с хранилища (`path` / `paths` + `preset_id`)
 - `GET /api/jobs/<job_id>/download` - Скачивание результата
 - `DELETE /api/jobs/<job_id>/delete` - Удаление задания
 - `POST /api/jobs/<job_id>/stop` - Остановка задания
 
 ### API для пресетов
 
-- `GET /api/presets` - Список всех пресетов
+- `GET /api/presets` - Список всех пресетов (`group`, `available`)
 - `GET /api/presets/<preset_id>` - Конкретный пресет
+
+### Стабильные `preset_id`
+
+| id | group | Описание |
+|----|-------|----------|
+| `default` | rip | CRF 23 / slow, аудио copy |
+| `aac_audio` | rip | HEVC + AAC 192k |
+| `aac_fdk_audio` | rip | HEVC + libfdk_aac 192k (нужен nonfree FFmpeg) |
+| `opus_audio` | rip | HEVC + Opus |
+| `video_only` | rip | Только видео |
+| `bd_default` | remux | CRF 21 / slower, аудио copy |
+| `bd_aac_audio` | remux | HEVC + AAC 192k |
+| `bd_aac_fdk_audio` | remux | HEVC + libfdk_aac 192k |
+| `bd_opus_audio` | remux | HEVC + Opus |
+| `bd_video_only` | remux | Только видео |
 
 ### WebSocket события
 
@@ -201,7 +225,7 @@ python -m app.main
 ### Добавление нового пресета
 
 1. Создайте файл `presets/your_preset.yaml`
-2. Скопируйте структуру из существующего пресета
+2. Скопируйте структуру из существующего пресета (поле `group`: `rip` или `remux`)
 3. Измените параметры под ваши нужды
 4. Перезапустите приложение
 
@@ -210,6 +234,7 @@ python -m app.main
 ```yaml
 id: my_custom_preset
 name: Мой пресет
+group: rip
 description: Пользовательский пресет для кодирования
 
 video_codec: libx265
@@ -233,7 +258,7 @@ subtitle_codec: copy
 data_codec: copy
 ```
 
-Подробная документация по пресетам доступна в `presets/README.md`.
+Подробности по HTTP API и сценариям batch — в `docs/API.md`.
 
 ## Конфигурация
 
@@ -254,7 +279,12 @@ FFmpeg **не встраивается в образ** при `docker build`. П
 
 - Том `ffmpeg_bin` сохраняет бинарники между перезапусками.
 - Свои бинарники: положите `bin/ffmpeg` и `bin/ffprobe` в каталог на хосте и смонтируйте его в `/app/ffmpeg` (см. комментарии в `docker-compose*.yml`). При наличии исполняемых файлов загрузка пропускается.
+- Для пресетов **AAC FDK** (`libfdk_aac`) нужна nonfree-сборка FFmpeg с FDK: смонтируйте её в `/app/ffmpeg` или задайте `FFMPEG_BIN` / `FFPROBE_BIN`.
 - Первый старт может занять дольше (скачивание); `healthcheck.start_period` увеличен до 120s.
+
+### MKVToolNix (mkvmerge)
+
+В образе ставится **mkvtoolnix** (только CLI) из официального APT-репозитория [mkvtoolnix.download](https://mkvtoolnix.download/), а не из пакетов дистрибутива Debian. Версия CLI следует upstream Moritz Bunkus.
 
 ### Docker Volumes
 

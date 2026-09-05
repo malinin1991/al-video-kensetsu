@@ -1,0 +1,25 @@
+id: bd_opus_audio
+name: HEVC + Opus
+group: remux
+description: BD / remux — HEVC CRF 21, slower, Opus аудио
+
+video_codec: libx265
+preset: slower
+crf: 21
+pixel_format: yuv420p10le
+x265_params: level=5.1:ref=6
+tune: animation
+
+audio_settings:
+  codec: libopus
+  bitrate: 160k
+  sample_rate: 48000
+  vbr: true
+
+output_format: matroska
+video_map: 0:v:0
+audio_map: 0:a?
+subtitle_map: 0:s?
+data_map: 0:t?
+subtitle_codec: copy
+data_codec: copy

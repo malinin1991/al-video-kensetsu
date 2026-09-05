@@ -1,0 +1,24 @@
+id: bd_video_only
+name: Только видео
+group: remux
+description: BD / remux — только видео, CRF 21, slower
+
+video_codec: libx265
+preset: slower
+crf: 21
+pixel_format: yuv420p10le
+x265_params: level=5.1:ref=6
+tune: animation
+
+audio_settings:
+  codec: null
+  bitrate: null
+  sample_rate: null
+
+output_format: matroska
+video_map: 0:v:0
+audio_map: null
+subtitle_map: null
+data_map: null
+subtitle_codec: null
+data_codec: null

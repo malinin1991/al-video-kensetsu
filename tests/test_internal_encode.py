@@ -171,7 +171,7 @@ class TestInternalEncodeApi:
             json={'path': str(video), 'preset': 'no_such_preset'},
         )
         assert response.status_code == 400
-        assert response.get_json()['error'] == 'Пресет не найден'
+        assert response.get_json()['error'] == 'Неизвестный пресет: no_such_preset'
 
     def test_preset_by_id(self, client, internal_env):
         source_root, _uploads = internal_env
@@ -185,16 +185,18 @@ class TestInternalEncodeApi:
         assert job['preset_id'] == 'aac_audio'
         assert job['ffmpeg_params']['audio_codec'] == 'aac'
 
-    def test_preset_by_name(self, client, internal_env):
+    def test_preset_by_name_ambiguous_400(self, client, internal_env):
         source_root, _uploads = internal_env
         video = make_video(source_root)
         response = client.post(
             '/api/internal/encode',
             json={'path': str(video), 'preset': 'HEVC + AAC'},
         )
-        assert response.status_code == 200
-        job = response.get_json()['job']
-        assert job['preset_id'] == 'aac_audio'
+        assert response.status_code == 400
+        err = response.get_json()['error'].lower()
+        assert 'неоднознач' in err
+        assert 'aac_audio' in err
+        assert 'bd_aac_audio' in err
 
     def test_default_preset_when_omitted(self, client, internal_env):
         source_root, _uploads = internal_env

@@ -1,6 +1,7 @@
 id: aac_audio
 name: HEVC + AAC
-description: HEVC видео с AAC аудио
+group: rip
+description: HEVC видео с AAC аудио 192k
 
 video_codec: libx265
 preset: slow
@@ -11,7 +12,7 @@ tune: animation
 
 audio_settings:
   codec: aac
-  bitrate: 128k
+  bitrate: 192k
   sample_rate: 48000
 
 output_format: matroska

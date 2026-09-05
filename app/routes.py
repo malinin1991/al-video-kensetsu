@@ -16,13 +16,21 @@ from app.internal_source import (
     cleanup_job_original,
     copy_internal_source_to_uploads,
     get_internal_source_roots,
+    get_uploads_dir,
     is_internal_source_path,
     original_in_use_by_jobs,
     resolve_internal_source_path,
 )
 from app.logger import logger
 from app.settings_store import get_metadata_nickname, load_settings, save_settings, has_saved_nickname
-from app.mkvmerge_remux import cleanup_job_sidecars, sanitize_nickname
+from app.mkvmerge_remux import cleanup_job_sidecars, get_mkvmerge_bin, sanitize_nickname
+from app.ffmpeg_bootstrap import (
+    get_ffmpeg_bin,
+    get_ffmpeg_build_info,
+    get_ffmpeg_version_label,
+    get_ffmpeg_version_token,
+    has_libfdk_aac,
+)
 # Импорты будут определены в функциях для избежания циклических зависимостей
 
 main_bp = Blueprint('main', __name__)
@@ -190,34 +198,99 @@ def upload_file():
     except Exception as e:
         return jsonify({'error': f'Ошибка загрузки: {str(e)}'}), 500
 
+def _collect_upload_files(request):
+    """Собирает файлы из multipart: files[] и/или file.
+
+    Returns:
+        (files, is_batch)
+    """
+    named_files = [
+        f for f in request.files.getlist('files')
+        if f and getattr(f, 'filename', None)
+    ]
+    single_files = [
+        f for f in request.files.getlist('file')
+        if f and getattr(f, 'filename', None)
+    ]
+    if named_files:
+        return named_files, True
+    if len(single_files) > 1:
+        return single_files, True
+    if len(single_files) == 1:
+        return single_files, False
+    return [], False
+
+
+def _batch_encode_response(jobs: list, errors: list):
+    """Формирует ответ batch encode: 200 / 207 / 400."""
+    created = len(jobs)
+    payload = {
+        'created': created,
+        'message': f'Создано заданий: {created}',
+        'jobs': jobs,
+        'errors': errors,
+    }
+    if created and errors:
+        return jsonify(payload), 207
+    if created:
+        return jsonify(payload), 200
+    return jsonify(payload), 400
+
+
 def handle_full_file_upload(request):
-    """Обрабатывает загрузку полного файла (старый способ)"""
-    if 'file' not in request.files:
+    """Обрабатывает загрузку полного файла или пачки (files / несколько file)."""
+    files, is_batch = _collect_upload_files(request)
+    if not files:
         logger.upload_logger.warning("Попытка загрузки без файла")
         return jsonify({'error': 'Файл не выбран'}), 400
-    
-    file = request.files['file']
-    if file.filename == '':
-        logger.upload_logger.warning("Попытка загрузки пустого файла")
-        return jsonify({'error': 'Файл не выбран'}), 400
-    
-    if not allowed_file(file.filename):
-        logger.upload_logger.warning(f"Неподдерживаемый тип файла: {file.filename}")
-        return jsonify({'error': 'Неподдерживаемый тип файла'}), 400
-    
-    logger.upload_logger.info(f"Начало загрузки файла: {file.filename}")
-    
-    # Получаем параметры FFmpeg из формы
+
     parsed, err = _ffmpeg_params_or_error(request)
     if err is not None:
         return err
     ffmpeg_params, preset_id = parsed
-    
-    # Создаем безопасное имя файла
-    filename = create_secure_filename(file.filename)
-    
-    # Обрабатываем одиночный видео файл
-    return handle_single_video_upload(file, filename, ffmpeg_params, preset_id)
+
+    if not is_batch:
+        file = files[0]
+        if not allowed_file(file.filename):
+            logger.upload_logger.warning(f"Неподдерживаемый тип файла: {file.filename}")
+            return jsonify({'error': 'Неподдерживаемый тип файла'}), 400
+        logger.upload_logger.info(f"Начало загрузки файла: {file.filename}")
+        filename = create_secure_filename(file.filename)
+        return handle_single_video_upload(file, filename, ffmpeg_params, preset_id)
+
+    jobs = []
+    errors = []
+    for file in files:
+        original_name = file.filename or 'unknown'
+        file_path = None
+        try:
+            if not allowed_file(original_name):
+                errors.append({
+                    'filename': original_name,
+                    'error': 'Неподдерживаемый тип файла',
+                })
+                continue
+            filename = create_secure_filename(original_name)
+            logger.upload_logger.info(f"Batch: загрузка файла {original_name}")
+            unique_filename = f"{uuid.uuid4().hex}_{filename}"
+            file_path = os.path.join(get_uploads_dir(), unique_filename)
+            file.save(file_path)
+            job, job_err = create_job_from_saved_file(
+                file_path, filename, ffmpeg_params, preset_id
+            )
+            if job_err:
+                cleanup_file(file_path)
+                file_path = None
+                errors.append({'filename': original_name, 'error': job_err})
+            else:
+                file_path = None  # файл принадлежит заданию
+                jobs.append(job.to_dict())
+        except Exception as exc:
+            if file_path:
+                cleanup_file(file_path)
+            errors.append({'filename': original_name, 'error': str(exc)})
+
+    return _batch_encode_response(jobs, errors)
 
 def handle_chunk_upload(request, file_id, chunk_number, total_chunks):
     """Обрабатывает загрузку чанка файла"""
@@ -230,7 +303,7 @@ def handle_chunk_upload(request, file_id, chunk_number, total_chunks):
             return jsonify({'error': 'Пустой чанк файла'}), 400
         
         # Создаем директорию для временных чанков
-        temp_dir = f'/app/uploads/temp_{file_id}'
+        temp_dir = os.path.join(get_uploads_dir(), f'temp_{file_id}')
         ensure_directory_exists(temp_dir)
         
         # Сохраняем чанк
@@ -259,12 +332,12 @@ def handle_chunk_upload(request, file_id, chunk_number, total_chunks):
 def assemble_file_from_chunks(file_id, total_chunks, request):
     """Собирает файл из чанков"""
     try:
-        temp_dir = f'/app/uploads/temp_{file_id}'
+        temp_dir = os.path.join(get_uploads_dir(), f'temp_{file_id}')
         final_filename = request.form.get('filename', 'uploaded_file')
         
         # Создаем финальный файл (уникальное имя, не полагаемся на client file_id)
         final_path = os.path.join(
-            '/app/uploads',
+            get_uploads_dir(),
             f"{uuid.uuid4().hex}_{create_secure_filename(final_filename)}",
         )
         
@@ -367,19 +440,28 @@ def get_ffmpeg_params_from_request(request):
     """Извлекает параметры FFmpeg из запроса.
 
     Raises:
-        ValueError: невалидный ник или параметры метаданных.
+        ValueError: неизвестный preset_id, недоступный FDK, невалидный ник.
     """
     preset_id = request.form.get('preset_id', 'default')
     preset_modified = request.form.get('preset_modified', 'false') == 'true'
     preset = preset_manager.get_preset(preset_id)
 
+    if preset_id and preset_id != 'custom' and not preset_modified and not preset:
+        raise ValueError(f'Неизвестный пресет: {preset_id}')
+
     if preset_id != 'custom' and not preset_modified and preset:
+        _ensure_fdk_available(preset)
         params = preset.get_ffmpeg_params()
         final_preset_id = preset_id
         logger.main_logger.info(f"Пресет {preset_id}: используются параметры пресета без изменений")
     else:
         params = _get_form_ffmpeg_params(request)
         final_preset_id = 'custom'
+        if params.get('audio_codec') == 'libfdk_aac' and not has_libfdk_aac():
+            raise ValueError(
+                'Кодек libfdk_aac недоступен в текущей сборке FFmpeg '
+                '(нужен nonfree FFmpeg с libfdk_aac)'
+            )
         if preset_modified:
             logger.main_logger.info(f"Пресет {preset_id}: форма изменена пользователем — custom")
         elif not preset:
@@ -398,6 +480,23 @@ def get_ffmpeg_params_from_request(request):
     return params, final_preset_id
 
 
+def _ensure_fdk_available(preset) -> None:
+    """ValueError, если пресет требует libfdk_aac, а кодека нет."""
+    if preset and preset.uses_fdk_aac() and not has_libfdk_aac():
+        raise ValueError(
+            f'Пресет «{preset.id}» требует libfdk_aac, но энкодер недоступен '
+            f'в текущей сборке FFmpeg (смонтируйте nonfree FFmpeg с FDK)'
+        )
+
+
+def _preset_available(preset) -> bool:
+    if preset is None:
+        return False
+    if preset.uses_fdk_aac():
+        return has_libfdk_aac()
+    return True
+
+
 def _ffmpeg_params_or_error(request):
     """Обёртка: параметры FFmpeg или JSON 400 при ValueError."""
     try:
@@ -405,13 +504,18 @@ def _ffmpeg_params_or_error(request):
     except ValueError as exc:
         return None, (jsonify({'error': str(exc)}), 400)
 
-def process_single_video_file(file_path, filename, ffmpeg_params, preset_id):
-    """Общая функция для обработки одиночного видео файла"""
+
+def create_job_from_saved_file(file_path, filename, ffmpeg_params, preset_id):
+    """Создаёт задание из уже сохранённого файла.
+
+    Returns:
+        (Job, None) или (None, error_message)
+    """
     bound_path = file_path
     job_added = False
     try:
         logger.upload_logger.info(f"Обработка одиночного файла: {filename}")
-        
+
         job_id = str(uuid.uuid4())
         shared = original_in_use_by_jobs(file_path, get_all_jobs())
         bound_path = bind_original_to_job(
@@ -419,15 +523,11 @@ def process_single_video_file(file_path, filename, ffmpeg_params, preset_id):
         )
 
         file_size = os.path.getsize(bound_path)
-        
         logger.upload_logger.info(f"Файл готов: {bound_path} ({file_size} байт)")
-        
-        # Вычисляем хеш файла
+
         file_hash = calculate_file_hash(bound_path)
-        
         logger.upload_logger.info(f"Хеш файла вычислен: {file_hash[:16]}...")
-        
-        # Создаем задание
+
         job = Job(
             id=job_id,
             filename=filename,
@@ -436,22 +536,29 @@ def process_single_video_file(file_path, filename, ffmpeg_params, preset_id):
             ffmpeg_params=ffmpeg_params,
             preset_id=preset_id
         )
-        
+
         added_job = add_job(job)
         job_added = True
-        
         logger.upload_logger.info(f"Одиночный файл обработан успешно: задание {added_job.id}")
-        
-        return jsonify({
-            'message': 'Файл загружен успешно',
-            'job': added_job.to_dict(),
-            'completed': True,
-        })
-    
+        return added_job, None
     except Exception as e:
         if not job_added and bound_path and bound_path != file_path:
             cleanup_file(bound_path)
-        return jsonify({'error': f'Ошибка загрузки файла: {str(e)}'}), 500
+        return None, f'Ошибка загрузки файла: {str(e)}'
+
+
+def process_single_video_file(file_path, filename, ffmpeg_params, preset_id):
+    """Общая функция для обработки одиночного видео файла"""
+    job, err = create_job_from_saved_file(
+        file_path, filename, ffmpeg_params, preset_id
+    )
+    if err:
+        return jsonify({'error': err}), 500
+    return jsonify({
+        'message': 'Файл загружен успешно',
+        'job': job.to_dict(),
+        'completed': True,
+    })
 
 def handle_single_video_upload(file, filename, ffmpeg_params, preset_id):
     """Обрабатывает загрузку одиночного видео файла"""
@@ -460,7 +567,7 @@ def handle_single_video_upload(file, filename, ffmpeg_params, preset_id):
         
         # Создаем уникальное имя файла
         unique_filename = f"{uuid.uuid4().hex}_{filename}"
-        file_path = os.path.join('/app/uploads', unique_filename)
+        file_path = os.path.join(get_uploads_dir(), unique_filename)
         
         # Сохраняем файл
         file.save(file_path)
@@ -475,7 +582,11 @@ def handle_single_video_upload(file, filename, ffmpeg_params, preset_id):
 
 
 def _find_preset_by_id_or_name(preset_key):
-    """Ищет пресет сначала по id, затем по имени."""
+    """Ищет пресет по id, затем по имени.
+
+    Клиентам рекомендуется всегда передавать уникальный ``preset_id``.
+    При совпадении нескольких пресетов по display name — ValueError (400).
+    """
     if preset_key is None:
         return None
     key = str(preset_key).strip()
@@ -485,14 +596,23 @@ def _find_preset_by_id_or_name(preset_key):
     if preset:
         return preset
     lowered = key.lower()
-    for item in preset_manager.get_all_presets():
-        if item.name == key or item.name.lower() == lowered:
-            return item
-    return None
+    matches = [
+        item for item in preset_manager.get_all_presets()
+        if item.name == key or item.name.lower() == lowered
+    ]
+    if not matches:
+        return None
+    if len(matches) > 1:
+        ids = ', '.join(item.id for item in matches)
+        raise ValueError(
+            f'Неоднозначное имя пресета «{key}»: совпали id [{ids}]. '
+            f'Укажите уникальный preset_id'
+        )
+    return matches[0]
 
 
 def _resolve_preset_from_json(payload):
-    """Пресет из JSON: preset_id, затем preset; если не указан — default."""
+    """Пресет из JSON: предпочтительно preset_id, затем preset; иначе default."""
     raw = payload.get('preset_id')
     if raw is None or str(raw).strip() == '':
         raw = payload.get('preset')
@@ -501,13 +621,14 @@ def _resolve_preset_from_json(payload):
         return preset, 'default'
     preset = _find_preset_by_id_or_name(raw)
     if not preset:
-        raise ValueError('Пресет не найден')
+        raise ValueError(f'Неизвестный пресет: {raw}')
     return preset, preset.id
 
 
 def _ffmpeg_params_from_json(payload):
     """Параметры FFmpeg для JSON API: пресет + ник + опциональная производительность."""
     preset, preset_id = _resolve_preset_from_json(payload)
+    _ensure_fdk_available(preset)
     params = preset.get_ffmpeg_params() if preset else Job.get_default_params()
     if params.get('audio_codec') == 'opus':
         params['audio_codec'] = 'libopus'
@@ -547,39 +668,38 @@ def _unwrap_flask_result(result):
     return result, getattr(result, 'status_code', 200)
 
 
-@main_bp.route('/api/internal/encode', methods=['POST'])
-def api_internal_encode():
-    """Кодирование файла с примонтированного хранилища (JSON и form)."""
+def _collect_internal_paths(is_json, payload, request):
+    """Собирает пути для internal encode. Returns (paths, is_batch)."""
+    if is_json:
+        if 'paths' in payload and payload.get('paths') is not None:
+            raw = payload.get('paths')
+            if isinstance(raw, str):
+                paths = [raw] if raw.strip() else []
+            elif isinstance(raw, list):
+                paths = [str(p) for p in raw if p is not None and str(p).strip()]
+            else:
+                raise ValueError('Поле paths должно быть массивом строк')
+            return paths, True
+        path = payload.get('path')
+        if path is None or str(path).strip() == '':
+            return [], False
+        return [path], False
+
+    form_paths = request.form.getlist('paths')
+    form_paths = [p for p in form_paths if p and str(p).strip()]
+    if form_paths:
+        return form_paths, True
+    path = request.form.get('path')
+    if path is None or str(path).strip() == '':
+        return [], False
+    return [path], False
+
+
+def _encode_internal_single(path, ffmpeg_params, preset_id):
+    """Копирует один internal-путь и создаёт задание. Возвращает Flask response."""
     dest_path = None
     try:
-        if get_internal_source_roots() is None:
-            return jsonify({'error': 'Внутренний режим кодирования отключён'}), 403
-
-        is_json = bool(request.is_json)
-        if is_json:
-            payload = request.get_json(silent=True) or {}
-            if not isinstance(payload, dict):
-                return jsonify({'error': 'Некорректный JSON'}), 400
-            path = payload.get('path')
-        else:
-            path = request.form.get('path')
-
-        try:
-            resolved = resolve_internal_source_path(path)
-        except InternalSourceError as exc:
-            return jsonify({'error': exc.message}), exc.status_code
-
-        if is_json:
-            try:
-                ffmpeg_params, preset_id = _ffmpeg_params_from_json(payload)
-            except ValueError as exc:
-                return jsonify({'error': str(exc)}), 400
-        else:
-            parsed, err = _ffmpeg_params_or_error(request)
-            if err is not None:
-                return err
-            ffmpeg_params, preset_id = parsed
-
+        resolved = resolve_internal_source_path(path)
         dest_path, original_name = copy_internal_source_to_uploads(resolved)
         result = process_single_video_file(
             dest_path, original_name, ffmpeg_params, preset_id
@@ -606,13 +726,91 @@ def api_internal_encode():
         if dest_path:
             cleanup_file(dest_path)
         return jsonify({'error': exc.message}), exc.status_code
-    except ValueError as exc:
+    except Exception:
         if dest_path:
             cleanup_file(dest_path)
+        raise
+
+
+def _encode_internal_batch(paths, ffmpeg_params, preset_id):
+    """Batch internal encode: один preset_id на все paths."""
+    jobs = []
+    errors = []
+    for path in paths:
+        dest_path = None
+        display_name = str(path)
+        try:
+            resolved = resolve_internal_source_path(path)
+            display_name = os.path.basename(resolved) or display_name
+            dest_path, original_name = copy_internal_source_to_uploads(resolved)
+            display_name = original_name
+            job, job_err = create_job_from_saved_file(
+                dest_path, original_name, ffmpeg_params, preset_id
+            )
+            if job_err:
+                cleanup_file(dest_path)
+                errors.append({'filename': display_name, 'error': job_err, 'path': str(path)})
+            else:
+                jobs.append(job.to_dict())
+        except InternalSourceError as exc:
+            if dest_path:
+                cleanup_file(dest_path)
+            errors.append({
+                'filename': display_name,
+                'error': exc.message,
+                'path': str(path),
+            })
+        except Exception as exc:
+            if dest_path:
+                cleanup_file(dest_path)
+            errors.append({
+                'filename': display_name,
+                'error': str(exc),
+                'path': str(path),
+            })
+    return _batch_encode_response(jobs, errors)
+
+
+@main_bp.route('/api/internal/encode', methods=['POST'])
+def api_internal_encode():
+    """Кодирование файла(ов) с примонтированного хранилища (JSON и form)."""
+    try:
+        if get_internal_source_roots() is None:
+            return jsonify({'error': 'Внутренний режим кодирования отключён'}), 403
+
+        is_json = bool(request.is_json)
+        payload = {}
+        if is_json:
+            payload = request.get_json(silent=True) or {}
+            if not isinstance(payload, dict):
+                return jsonify({'error': 'Некорректный JSON'}), 400
+
+        try:
+            paths, is_batch = _collect_internal_paths(is_json, payload, request)
+        except ValueError as exc:
+            return jsonify({'error': str(exc)}), 400
+
+        if not paths:
+            return jsonify({'error': 'Не указан path / paths'}), 400
+
+        # Валидация preset_id/FDK до создания заданий
+        if is_json:
+            try:
+                ffmpeg_params, preset_id = _ffmpeg_params_from_json(payload)
+            except ValueError as exc:
+                return jsonify({'error': str(exc)}), 400
+        else:
+            parsed, err = _ffmpeg_params_or_error(request)
+            if err is not None:
+                return err
+            ffmpeg_params, preset_id = parsed
+
+        if is_batch:
+            return _encode_internal_batch(paths, ffmpeg_params, preset_id)
+        return _encode_internal_single(paths[0], ffmpeg_params, preset_id)
+    except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
     except Exception as e:
-        if dest_path:
-            cleanup_file(dest_path)
         logger.upload_logger.error(f"Ошибка внутреннего кодирования: {e}")
         return jsonify({'error': f'Ошибка внутреннего кодирования: {str(e)}'}), 500
 
@@ -718,8 +916,13 @@ def stop_job(job_id):
 def api_presets():
     """API для получения списка всех пресетов"""
     presets = preset_manager.get_all_presets()
-    logger.main_logger.info(f"API пресетов: возвращаем {len(presets)} преsетов")
-    return jsonify([preset.to_dict() for preset in presets])
+    fdk_ok = has_libfdk_aac()
+    logger.main_logger.info(f"API пресетов: возвращаем {len(presets)} пресетов")
+    result = []
+    for preset in presets:
+        available = (not preset.uses_fdk_aac()) or fdk_ok
+        result.append(preset.to_dict(available=available))
+    return jsonify(result)
 
 @main_bp.route('/api/presets/<preset_id>')
 def api_preset(preset_id):
@@ -727,7 +930,8 @@ def api_preset(preset_id):
     preset = preset_manager.get_preset(preset_id)
     if preset:
         logger.main_logger.info(f"API пресета: возвращаем пресет {preset_id}")
-        return jsonify(preset.to_dict())
+        available = _preset_available(preset)
+        return jsonify(preset.to_dict(available=available))
     logger.main_logger.warning(f"API пресета: пресет {preset_id} не найден")
     return jsonify({'error': 'Пресет не найден'}), 404
 
@@ -918,8 +1122,12 @@ def system_info():
         try:
             with open('/app/build_number.txt', 'r', encoding='utf-8') as f:
                 build_number = f.read().strip()
-        except:
-            build_number = '1'
+        except Exception:
+            try:
+                with open('build_number.txt', 'r', encoding='utf-8') as f:
+                    build_number = f.read().strip()
+            except Exception:
+                build_number = '1'
         
         # Информация о системе
         os_info = f"{platform.system()} {platform.release()}"
@@ -933,9 +1141,17 @@ def system_info():
         # Статус компонентов
         system_status = 'ok'
         ffmpeg_status = 'ok' if check_ffmpeg() else 'error'
-        ffmpeg_version = get_ffmpeg_version() if ffmpeg_status == 'ok' else None
-        worker_status = 'ok'  # Можно добавить проверку воркера
-        websocket_status = 'ok'  # Можно добавить проверку WebSocket
+        ffmpeg_build = get_ffmpeg_build_info() if ffmpeg_status == 'ok' else {}
+        ffmpeg_version = (
+            get_ffmpeg_version_token() if ffmpeg_status == 'ok' else None
+        )
+        ffmpeg_version_label = (
+            get_ffmpeg_version_label() if ffmpeg_status == 'ok' else None
+        )
+        mkvmerge_status, mkvmerge_version = get_mkvmerge_status()
+        libfdk = has_libfdk_aac() if ffmpeg_status == 'ok' else False
+        worker_status = 'ok'
+        websocket_status = 'ok'
         
         return jsonify({
             'cpu_count': cpu_count,
@@ -957,6 +1173,12 @@ def system_info():
             'system_status': system_status,
             'ffmpeg_status': ffmpeg_status,
             'ffmpeg_version': ffmpeg_version,
+            'ffmpeg_version_label': ffmpeg_version_label,
+            'ffmpeg_configuration': ffmpeg_build.get('configuration'),
+            'ffmpeg_libraries': ffmpeg_build.get('libraries') or {},
+            'libfdk_aac': libfdk,
+            'mkvmerge_status': mkvmerge_status,
+            'mkvmerge_version': mkvmerge_version,
             'worker_status': worker_status,
             'websocket_status': websocket_status,
             'status': 'ok'
@@ -978,37 +1200,40 @@ def format_uptime(seconds):
         return f"{minutes}м"
 
 def get_ffmpeg_version():
-    """Получает версию FFmpeg"""
+    """Короткий токен версии FFmpeg (без префикса «ffmpeg »)."""
     try:
-        import subprocess
-        from app.ffmpeg_bootstrap import get_ffmpeg_bin
-        result = subprocess.run([get_ffmpeg_bin(), '-version'],
-                              capture_output=True, text=True, timeout=5)
-        if result.returncode == 0:
-            # Извлекаем версию из первой строки вывода
-            # Формат: "ffmpeg version X.Y.Z ..."
-            lines = result.stdout.split('\n')
-            if lines:
-                version_line = lines[0]
-                # Ищем паттерн версии
-                import re
-                version_match = re.search(r'version\s+([\d.]+)', version_line)
-                if version_match:
-                    return version_match.group(1)
-                # Если не нашли версию, возвращаем первую строку
-                return version_line.split('version')[1].strip() if 'version' in version_line else 'Неизвестно'
-        return None
+        return get_ffmpeg_version_token()
     except Exception as e:
         logger.main_logger.error(f"Ошибка получения версии FFmpeg: {e}")
         return None
+
+def get_mkvmerge_status():
+    """Возвращает (status, version_string) для mkvmerge."""
+    import subprocess
+    try:
+        binary = get_mkvmerge_bin()
+        result = subprocess.run(
+            [binary, '--version'],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if result.returncode != 0:
+            return 'error', None
+        first = (result.stdout or result.stderr or '').splitlines()
+        version = first[0].strip() if first else binary
+        return 'ok', version
+    except Exception as e:
+        logger.main_logger.warning(f"mkvmerge недоступен: {e}")
+        return 'error', None
 
 def check_ffmpeg():
     """Проверяет доступность FFmpeg"""
     try:
         import subprocess
-        from app.ffmpeg_bootstrap import get_ffmpeg_bin
         result = subprocess.run([get_ffmpeg_bin(), '-version'],
                               capture_output=True, text=True, timeout=5)
         return result.returncode == 0
-    except:
+    except Exception:
         return False

@@ -235,58 +235,75 @@ async function submitInternalEncode() {
 }
 
 async function uploadMultipleFiles(files, chunkSize) {
-    // Загружает несколько файлов последовательно
+    // Загружает несколько файлов: one-shot multipart если все ≤ chunkSize
     const totalFiles = files.length;
     let uploadedFiles = 0;
     let totalUploadedBytes = 0;
     let totalSize = 0;
-    
-    // Подсчитываем общий размер всех файлов
+
     files.forEach(file => {
         totalSize += file.size;
     });
-    
-    // Обновляем общий прогресс
+
     updateTotalUploadProgress(0);
-    
+
+    const allDirect = files.every(file => file.size <= chunkSize);
+    if (totalFiles > 1 && allDirect) {
+        try {
+            await uploadFilesBatch(files, (progress) => {
+                updateTotalUploadProgress(progress);
+            });
+            uploadedFiles = totalFiles;
+            updateTotalUploadProgress(100);
+            showAlert('success', `Успешно загружено файлов: ${uploadedFiles}`);
+            const form = document.getElementById('uploadForm');
+            const input = document.getElementById('fileInput');
+            if (form) {
+                form.reset();
+            }
+            if (input) {
+                input.value = '';
+            }
+            refreshJobsList();
+        } catch (error) {
+            console.error('Ошибка batch-загрузки:', error);
+            showAlert('danger', error.message || 'Ошибка загрузки файлов');
+        }
+        return;
+    }
+
     for (let i = 0; i < files.length; i++) {
         const file = files[i];
-        
+
         if (window.isDevelopment) {
             console.log(`Загрузка файла ${i + 1}/${totalFiles}:`, file.name, 'размер:', file.size);
         }
-        
+
         try {
             if (file.size > chunkSize) {
-                // Загружаем по чанкам для файлов больше 4MB
                 await uploadFileInChunks(file, chunkSize, (fileProgress) => {
-                    // Рассчитываем общий прогресс
                     const fileCompletedBytes = (fileProgress / 100) * file.size;
                     const overallProgress = ((totalUploadedBytes + fileCompletedBytes) / totalSize) * 100;
                     updateTotalUploadProgress(overallProgress);
                 });
             } else {
-                // Загружаем как обычно для файлов до 4MB
                 await uploadFileDirectly(file, (fileProgress) => {
-                    // Рассчитываем общий прогресс
                     const fileCompletedBytes = (fileProgress / 100) * file.size;
                     const overallProgress = ((totalUploadedBytes + fileCompletedBytes) / totalSize) * 100;
                     updateTotalUploadProgress(overallProgress);
                 });
             }
-            
+
             uploadedFiles++;
             totalUploadedBytes += file.size;
-            
-            // Обновляем общий прогресс после завершения файла
             updateTotalUploadProgress((totalUploadedBytes / totalSize) * 100);
-            
+
         } catch (error) {
             console.error(`Ошибка загрузки файла ${file.name}:`, error);
             showAlert('danger', `Ошибка загрузки файла: ${file.name}`);
         }
     }
-    
+
     if (uploadedFiles === totalFiles) {
         showAlert('success', `Успешно загружено файлов: ${uploadedFiles}`);
         const form = document.getElementById('uploadForm');
@@ -297,9 +314,85 @@ async function uploadMultipleFiles(files, chunkSize) {
         if (input) {
             input.value = '';
         }
-        // Надёжно обновляем список (socket мог ещё не прислать job_update)
         refreshJobsList();
     }
+}
+
+function isUploadHttpSuccess(status) {
+    return status === 200 || status === 207;
+}
+
+function applyUploadJobsFromResult(result) {
+    if (!result) {
+        return;
+    }
+    if (result.jobs) {
+        result.jobs.forEach(job => {
+            addJobToContainer(job);
+        });
+    } else if (result.job) {
+        addJobToContainer(result.job);
+    }
+    refreshJobsList();
+}
+
+async function uploadFilesBatch(files, progressCallback) {
+    // One-shot multipart: несколько parts с именем files + один preset_id
+    if (window.isDevelopment) {
+        console.log('Batch-загрузка файлов:', files.length);
+    }
+    const formData = new FormData();
+    files.forEach(file => {
+        formData.append('files', file);
+    });
+    addFormDataToFormData(formData);
+
+    return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+
+        xhr.upload.addEventListener('progress', (e) => {
+            if (e.lengthComputable) {
+                const progress = (e.loaded / e.total) * 100;
+                if (progressCallback) {
+                    progressCallback(progress);
+                }
+                updateUploadProgress(progress);
+            }
+        });
+
+        xhr.addEventListener('load', () => {
+            let result = {};
+            try {
+                result = JSON.parse(xhr.responseText);
+            } catch (error) {
+                if (isUploadHttpSuccess(xhr.status)) {
+                    reject(new Error('Ошибка парсинга ответа сервера'));
+                    return;
+                }
+            }
+
+            if (isUploadHttpSuccess(xhr.status)) {
+                applyUploadJobsFromResult(result);
+                if (xhr.status === 207 && result.errors && result.errors.length) {
+                    const names = result.errors
+                        .map(item => item.filename || '?')
+                        .join(', ');
+                    showAlert('warning', `Часть файлов не принята: ${names}`);
+                }
+                resolve(result);
+                return;
+            }
+
+            reject(new Error(result.error || `Ошибка загрузки: статус ${xhr.status}`));
+        });
+
+        xhr.addEventListener('error', () => {
+            reject(new Error('Ошибка сети при загрузке файла'));
+        });
+
+        xhr.open('POST', '/api/upload');
+        xhr.send(formData);
+    });
 }
 
 async function uploadFileDirectly(file, progressCallback) {
@@ -309,18 +402,18 @@ async function uploadFileDirectly(file, progressCallback) {
     }
     const formData = new FormData();
     formData.append('file', file);
-    
+
     // Добавляем параметры FFmpeg
     addFormDataToFormData(formData);
-    
+
     if (window.isDevelopment) {
         console.log('Отправляем запрос на /api/upload');
     }
-    
+
     // Создаем XMLHttpRequest для отслеживания прогресса
     return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
-        
+
         // Отслеживаем прогресс загрузки
         xhr.upload.addEventListener('progress', (e) => {
             if (e.lengthComputable) {
@@ -331,22 +424,12 @@ async function uploadFileDirectly(file, progressCallback) {
                 updateUploadProgress(progress);
             }
         });
-        
+
         xhr.addEventListener('load', () => {
-            if (xhr.status === 200) {
+            if (isUploadHttpSuccess(xhr.status)) {
                 try {
                     const result = JSON.parse(xhr.responseText);
-                    
-                    // Обновляем список заданий из ответа и перечитываем /api/jobs
-                    if (result.jobs) {
-                        result.jobs.forEach(job => {
-                            addJobToContainer(job);
-                        });
-                    } else if (result.job) {
-                        addJobToContainer(result.job);
-                    }
-                    refreshJobsList();
-                    
+                    applyUploadJobsFromResult(result);
                     resolve(result);
                 } catch (error) {
                     reject(new Error('Ошибка парсинга ответа сервера'));
@@ -360,11 +443,11 @@ async function uploadFileDirectly(file, progressCallback) {
                 }
             }
         });
-        
+
         xhr.addEventListener('error', () => {
             reject(new Error('Ошибка сети при загрузке файла'));
         });
-        
+
         xhr.open('POST', '/api/upload');
         xhr.send(formData);
     });
@@ -432,15 +515,7 @@ async function uploadFileInChunks(file, chunkSize, progressCallback) {
                             console.log('Файл полностью загружен');
                         }
                         
-                        // Обновляем список заданий из ответа и перечитываем /api/jobs
-                        if (result.jobs) {
-                            result.jobs.forEach(job => {
-                                addJobToContainer(job);
-                            });
-                        } else if (result.job) {
-                            addJobToContainer(result.job);
-                        }
-                        refreshJobsList();
+                        applyUploadJobsFromResult(result);
                         
                         // Обновляем общий прогресс до 100%
                         if (progressCallback) {

@@ -1,4 +1,4 @@
-"""Тесты JSON-опций mkvmerge: языки, ник, charset, цвет."""
+"""Тесты JSON-опций mkvmerge: языки, ник, charset."""
 
 from __future__ import annotations
 
@@ -33,21 +33,18 @@ def _track(tid: int, track_type: str, **props):
     }
 
 
-def _sample_identify(*, color=True, pgs=True) -> dict:
+def _sample_identify(*, pgs=True) -> dict:
     video_props = {
         'codec_id': 'V_MPEGH/ISO/HEVC',
         'pixel_dimensions': '1920x1080',
         'display_dimensions': '1920x1080',
         'language': 'und',
         'track_name': 'Original',
+        'color_matrix_coefficients': 1,
+        'color_range': 1,
+        'color_transfer_characteristics': 1,
+        'color_primaries': 1,
     }
-    if color:
-        video_props.update({
-            'color_matrix_coefficients': 1,
-            'color_range': 1,
-            'color_transfer_characteristics': 1,
-            'color_primaries': 1,
-        })
 
     tracks = [
         _track(0, 'video', codec='HEVC/H.265/MPEG-H', **video_props),
@@ -621,19 +618,14 @@ class TestBuildMkvmergeOptions:
         assert '4:UTF-8' in charsets
         assert not any(value.startswith('5:') for value in charsets)
 
-    def test_color_only_when_present(self):
-        with_color = _build(identify=_sample_identify(color=True))
-        assert '0:1' in _flag_values(with_color, '--color-matrix-coefficients')
-        assert '0:1' in _flag_values(with_color, '--color-range')
-        assert '0:1' in _flag_values(with_color, '--color-transfer-characteristics')
-        assert '0:1' in _flag_values(with_color, '--color-primaries')
-        assert '0:1920x1080' in _flag_values(with_color, '--display-dimensions')
-
-        without = _build(identify=_sample_identify(color=False))
-        assert '--color-matrix-coefficients' not in without
-        assert '--color-range' not in without
-        assert '--color-primaries' not in without
-        assert '0:1920x1080' in _flag_values(without, '--display-dimensions')
+    def test_color_and_dimensions_not_forced(self):
+        """Цвет/размер из encode копирует mkvmerge сам — флаги не ставим."""
+        args = _build(identify=_sample_identify())
+        assert '--color-matrix-coefficients' not in args
+        assert '--color-range' not in args
+        assert '--color-transfer-characteristics' not in args
+        assert '--color-primaries' not in args
+        assert '--display-dimensions' not in args
 
     def test_no_language_when_empty_and_no_rule(self):
         identify = {

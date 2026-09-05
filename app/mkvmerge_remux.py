@@ -1,4 +1,4 @@
-"""Сборка контейнера после encode: JSON-опции mkvmerge (языки, имена, ник, цвет)."""
+"""Сборка контейнера после encode: JSON-опции mkvmerge (языки, имена, ник)."""
 
 from __future__ import annotations
 
@@ -25,7 +25,6 @@ _ORIGINAL_PREFIX_RE = re.compile(
 _NICKNAME_CONTROL_RE = re.compile(r'[\x00-\x1f\x7f]')
 _NICKNAME_TAG_ESCAPE_RE = re.compile(r'([\\\[\]+])')
 _MAX_NICKNAME_LEN = 64
-_DIMENSIONS_RE = re.compile(r'^[0-9]+x[0-9]+$')
 _REGULAR_TRACK_TYPES = frozenset({'video', 'audio', 'subtitles'})
 
 # ISO 639-2 (identify) → ISO 639-1 (как в GUI mkvmerge)
@@ -51,28 +50,6 @@ _ISO639_2_TO_1 = {
 }
 
 _UNKNOWN_LANGS = frozenset({'', 'und', 'unk', 'mis', 'zxx'})
-
-# Свойство identify → флаг mkvmerge (только если поле уже есть)
-_COLOR_FLAG_MAP = (
-    ('color_matrix_coefficients', '--color-matrix-coefficients'),
-    ('colour_matrix_coefficients', '--color-matrix-coefficients'),
-    ('color_range', '--color-range'),
-    ('colour_range', '--color-range'),
-    ('color_transfer_characteristics', '--color-transfer-characteristics'),
-    ('colour_transfer_characteristics', '--color-transfer-characteristics'),
-    ('color_primaries', '--color-primaries'),
-    ('colour_primaries', '--color-primaries'),
-    ('color_bits_per_channel', '--color-bits-per-channel'),
-    ('chroma_subsample', '--chroma-subsample'),
-    ('cb_subsample', '--cb-subsample'),
-    ('chroma_siting', '--chroma-siting'),
-    ('max_content_light', '--max-content-light'),
-    ('max_frame_light', '--max-frame-light'),
-    ('chromaticity_coordinates', '--chromaticity-coordinates'),
-    ('white_color_coordinates', '--white-color-coordinates'),
-    ('max_luminance', '--max-luminance'),
-    ('min_luminance', '--min-luminance'),
-)
 
 def sanitize_nickname(nickname: str) -> str:
     """Нормализует ник: trim, длина, без управляющих символов."""
@@ -231,8 +208,8 @@ def build_mkvmerge_options(
     """
     Собирает JSON-массив аргументов mkvmerge по identify закодированного файла.
 
-    Цвет и размер — только если уже есть в identify. Языки — ISO 639-1.
-    Default/forced/original ставятся явно по правилам сборки, не копируются из исходника.
+    Цвет и display dimensions не трогаем — mkvmerge копирует из исходника.
+    Языки — ISO 639-1. Default/forced/original ставятся явно по правилам сборки.
     """
     params = params or {}
     nickname = sanitize_nickname(str(params.get('metadata_nickname') or ''))
@@ -327,12 +304,6 @@ def _options_for_track(
             single_video=single_video,
         )
     )
-
-    if track_type == 'video':
-        dimensions = _display_dimensions(props)
-        if dimensions:
-            options.extend(['--display-dimensions', f'{tid}:{dimensions}'])
-        options.extend(_color_options(tid, props))
 
     return options
 
@@ -577,23 +548,3 @@ def _is_text_subtitle(track: dict[str, Any]) -> bool:
         return True
     codec_id = str(props.get('codec_id') or '')
     return codec_id.upper().startswith('S_TEXT/')
-
-def _display_dimensions(props: dict[str, Any]) -> str:
-    for key in ('display_dimensions', 'pixel_dimensions'):
-        value = str(props.get(key) or '').strip()
-        if value and _DIMENSIONS_RE.match(value):
-            return value
-    return ''
-
-def _color_options(tid: int, props: dict[str, Any]) -> list[str]:
-    options: list[str] = []
-    seen_flags: set[str] = set()
-    for prop_key, flag in _COLOR_FLAG_MAP:
-        if prop_key not in props or flag in seen_flags:
-            continue
-        value = props[prop_key]
-        if value is None or value == '':
-            continue
-        options.extend([flag, f'{tid}:{value}'])
-        seen_flags.add(flag)
-    return options

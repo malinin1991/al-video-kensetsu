@@ -20,6 +20,7 @@ from app.mkvmerge_remux import (
     build_mkvmerge_options,
     cleanup_job_sidecars,
     encode_partial_path,
+    fix_font_attachment_mime_types,
     get_mkvmerge_bin,
     identify_encoded_file,
     is_update_metadata_enabled,
@@ -441,8 +442,28 @@ class FFmpegWorker:
         
         return cmd
 
+    def _fix_font_mimes_before_merge(self, job: Job, encode_path: str) -> None:
+        """Перед remux: выравнивает MIME шрифтов по расширению."""
+        if not self._should_remux_metadata(job):
+            return
+        if not encode_path or not os.path.exists(encode_path):
+            return
+        fixes = fix_font_attachment_mime_types(encode_path)
+        if not fixes:
+            return
+        summary = ', '.join(
+            f"{item['file_name'] or item['id']}: "
+            f"{item['current_mime'] or '(пусто)'} → {item['expected_mime']}"
+            for item in fixes
+        )
+        message = f'Исправлены MIME шрифтов ({len(fixes)}): {summary}'
+        logger.main_logger.info(f'{message} [{job.id}]')
+        if self.log_callback:
+            self.log_callback(job.id, message)
+
     def _finalize_encoded_output(self, job: Job, encode_path: str) -> None:
-        """Remux через mkvmerge или подмена partial на финальное имя."""
+        """Правка MIME шрифтов (если remux), затем remux или подмена partial."""
+        self._fix_font_mimes_before_merge(job, encode_path)
         if self._should_remux_metadata(job):
             self._run_mkvmerge_remux(job, encode_path)
             return

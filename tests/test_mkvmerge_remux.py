@@ -9,11 +9,18 @@ from unittest.mock import patch
 import pytest
 
 from app.mkvmerge_remux import (
+    MIME_OPENTYPE,
+    MIME_TRUETYPE,
     build_mkvmerge_options,
+    build_mkvpropedit_font_mime_command,
     cleanup_job_sidecars,
+    collect_font_mime_fixes,
     compress_language,
     escape_nickname_for_tag,
+    expected_font_mime_type,
+    fix_font_attachment_mime_types,
     get_mkvmerge_bin,
+    get_mkvpropedit_bin,
     identify_encoded_file,
     is_aniliberty_title,
     is_original_track_title,
@@ -688,6 +695,153 @@ class TestIdentifyEncodedFile:
             assert kwargs.get('encoding') == 'utf-8'
             assert kwargs.get('errors') == 'replace'
             assert kwargs.get('text') is True
+
+
+class TestFontMimeFixes:
+    def test_expected_font_mime_type_by_extension(self):
+        assert expected_font_mime_type('9312.TTF') == MIME_TRUETYPE
+        assert expected_font_mime_type('fonts.ttc') == MIME_TRUETYPE
+        assert expected_font_mime_type('A-OTF-ShinGoPr5-Bold.otf') == MIME_OPENTYPE
+        assert expected_font_mime_type('readme.txt') is None
+        assert expected_font_mime_type('') is None
+
+    def test_collect_font_mime_fixes_skips_ok_and_non_fonts(self):
+        identify = {
+            'attachments': [
+                {
+                    'id': 1,
+                    'file_name': 'CAPTURE IT.TTF',
+                    'content_type': 'application/x-font-ttf',
+                },
+                {
+                    'id': 2,
+                    'file_name': 'BrushaffMod.ttf',
+                    'content_type': MIME_TRUETYPE,
+                },
+                {
+                    'id': 3,
+                    'file_name': 'A-OTF-ShinGoPr5-Bold.otf',
+                    'content_type': MIME_OPENTYPE,
+                },
+                {
+                    'id': 4,
+                    'file_name': 'wrong.otf',
+                    'content_type': 'font/otf',
+                },
+                {
+                    'id': 5,
+                    'file_name': 'note.txt',
+                    'content_type': 'text/plain',
+                },
+            ]
+        }
+        fixes = collect_font_mime_fixes(identify)
+        assert [(f['id'], f['expected_mime']) for f in fixes] == [
+            (1, MIME_TRUETYPE),
+            (4, MIME_OPENTYPE),
+        ]
+        assert fixes[0]['current_mime'] == 'application/x-font-ttf'
+
+    def test_build_mkvpropedit_command(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(
+            'app.mkvmerge_remux.get_mkvpropedit_bin',
+            lambda: 'mkvpropedit',
+        )
+        target = tmp_path / 'out.partial.mkv'
+        target.write_bytes(b'x')
+        cmd = build_mkvpropedit_font_mime_command(
+            str(target),
+            [
+                {
+                    'id': 1,
+                    'expected_mime': MIME_TRUETYPE,
+                },
+                {
+                    'id': 4,
+                    'expected_mime': MIME_OPENTYPE,
+                },
+            ],
+        )
+        assert cmd[0] == 'mkvpropedit'
+        assert cmd[1] == str(target.resolve())
+        assert cmd[2:] == [
+            '--attachment-mime-type',
+            MIME_TRUETYPE,
+            '--update-attachment',
+            '1',
+            '--attachment-mime-type',
+            MIME_OPENTYPE,
+            '--update-attachment',
+            '4',
+        ]
+
+    def test_fix_font_attachment_mime_types_runs_propedit(
+        self, monkeypatch, tmp_path
+    ):
+        target = tmp_path / 'out.partial.mkv'
+        target.write_bytes(b'x')
+        identify = {
+            'container': {'recognized': True, 'supported': True},
+            'attachments': [
+                {
+                    'id': 7,
+                    'file_name': 'ROMC.TTF',
+                    'content_type': 'application/x-font-ttf',
+                },
+            ],
+        }
+        monkeypatch.setattr(
+            'app.mkvmerge_remux.get_mkvpropedit_bin',
+            lambda: 'mkvpropedit',
+        )
+
+        class Result:
+            returncode = 0
+            stdout = 'Done.'
+            stderr = ''
+
+        with patch(
+            'app.mkvmerge_remux.subprocess.run', return_value=Result()
+        ) as run:
+            fixes = fix_font_attachment_mime_types(
+                str(target), identify=identify
+            )
+            run.assert_called_once()
+            cmd = run.call_args[0][0]
+            assert cmd[0] == 'mkvpropedit'
+            assert '--update-attachment' in cmd
+            assert '7' in cmd
+            assert MIME_TRUETYPE in cmd
+
+        assert len(fixes) == 1
+        assert fixes[0]['id'] == 7
+
+    def test_fix_font_attachment_mime_types_noop_when_ok(
+        self, monkeypatch, tmp_path
+    ):
+        target = tmp_path / 'out.partial.mkv'
+        target.write_bytes(b'x')
+        identify = {
+            'attachments': [
+                {
+                    'id': 1,
+                    'file_name': 'OpenSans-Semibold.ttf',
+                    'content_type': MIME_TRUETYPE,
+                },
+            ],
+        }
+        with patch('app.mkvmerge_remux.subprocess.run') as run:
+            fixes = fix_font_attachment_mime_types(
+                str(target), identify=identify
+            )
+            run.assert_not_called()
+        assert fixes == []
+
+    def test_get_mkvpropedit_bin_missing(self, monkeypatch):
+        monkeypatch.delenv('MKVPROPEDIT_BIN', raising=False)
+        monkeypatch.setattr('app.mkvmerge_remux.shutil.which', lambda _name: None)
+        with pytest.raises(RuntimeError, match='mkvpropedit не найден'):
+            get_mkvpropedit_bin()
 
 
 class TestMkvmergeBinAndSidecars:

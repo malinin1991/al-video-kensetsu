@@ -100,8 +100,17 @@ def audio_was_encoded(params: dict[str, Any] | None) -> bool:
     codec = str((params or {}).get('audio_codec') or '').strip().lower()
     return codec not in ('', 'none', 'null', 'copy', 'remove')
 
-def get_mkvmerge_bin() -> str:
-    configured = os.environ.get('MKVMERGE_BIN', '').strip()
+MIME_TRUETYPE = 'application/x-truetype-font'
+MIME_OPENTYPE = 'application/vnd.ms-opentype'
+
+_FONT_MIME_BY_EXT = {
+    '.ttf': MIME_TRUETYPE,
+    '.ttc': MIME_TRUETYPE,
+    '.otf': MIME_OPENTYPE,
+}
+
+def _resolve_tool_bin(env_var: str, tool_name: str) -> str:
+    configured = os.environ.get(env_var, '').strip()
     if configured:
         if os.path.isfile(configured):
             return configured
@@ -109,14 +118,134 @@ def get_mkvmerge_bin() -> str:
         if resolved:
             return resolved
         raise RuntimeError(
-            'mkvmerge не найден: установите mkvtoolnix или задайте MKVMERGE_BIN'
+            f'{tool_name} не найден: установите mkvtoolnix или задайте {env_var}'
         )
-    found = shutil.which('mkvmerge')
+    found = shutil.which(tool_name)
     if not found:
         raise RuntimeError(
-            'mkvmerge не найден: установите mkvtoolnix или задайте MKVMERGE_BIN'
+            f'{tool_name} не найден: установите mkvtoolnix или задайте {env_var}'
         )
     return found
+
+def get_mkvmerge_bin() -> str:
+    return _resolve_tool_bin('MKVMERGE_BIN', 'mkvmerge')
+
+def get_mkvpropedit_bin() -> str:
+    return _resolve_tool_bin('MKVPROPEDIT_BIN', 'mkvpropedit')
+
+def expected_font_mime_type(file_name: str) -> str | None:
+    """Ожидаемый MIME шрифта по расширению имени вложения; иначе None."""
+    name = str(file_name or '').strip()
+    if not name:
+        return None
+    _, ext = os.path.splitext(name)
+    return _FONT_MIME_BY_EXT.get(ext.lower())
+
+def collect_font_mime_fixes(identify: dict[str, Any]) -> list[dict[str, Any]]:
+    """
+    Вложения-шрифты, у которых content_type не совпадает с ожидаемым MIME.
+
+    Возвращает список dict: id, file_name, current_mime, expected_mime.
+    """
+    fixes: list[dict[str, Any]] = []
+    for item in identify.get('attachments') or []:
+        if not isinstance(item, dict):
+            continue
+        file_name = str(item.get('file_name') or '')
+        expected = expected_font_mime_type(file_name)
+        if not expected:
+            continue
+        current = str(item.get('content_type') or '').strip()
+        if current.lower() == expected.lower():
+            continue
+        try:
+            attachment_id = int(item.get('id'))
+        except (TypeError, ValueError):
+            logger.warning(
+                'Пропуск вложения без id при проверке MIME: %s',
+                file_name or item,
+            )
+            continue
+        fixes.append(
+            {
+                'id': attachment_id,
+                'file_name': file_name,
+                'current_mime': current,
+                'expected_mime': expected,
+            }
+        )
+    return fixes
+
+def build_mkvpropedit_font_mime_command(
+    filepath: str,
+    fixes: list[dict[str, Any]],
+) -> list[str]:
+    """Аргументы mkvpropedit: --attachment-mime-type + --update-attachment по id."""
+    if not fixes:
+        raise ValueError('Нет правок MIME для mkvpropedit')
+    cmd = [get_mkvpropedit_bin(), os.path.abspath(filepath)]
+    for fix in fixes:
+        cmd.extend(
+            [
+                '--attachment-mime-type',
+                str(fix['expected_mime']),
+                '--update-attachment',
+                str(int(fix['id'])),
+            ]
+        )
+    return cmd
+
+def fix_font_attachment_mime_types(
+    filepath: str,
+    *,
+    identify: dict[str, Any] | None = None,
+    timeout: int = 120,
+) -> list[dict[str, Any]]:
+    """
+    Перед remux: если MIME шрифта не совпадает с правилом по расширению — правит через mkvpropedit.
+
+    .ttf/.ttc → application/x-truetype-font
+    .otf → application/vnd.ms-opentype
+    """
+    if not filepath or not os.path.exists(filepath):
+        raise RuntimeError(f'Файл для правки MIME шрифтов не найден: {filepath}')
+
+    data = identify if identify is not None else identify_encoded_file(filepath)
+    fixes = collect_font_mime_fixes(data)
+    if not fixes:
+        return []
+
+    cmd = build_mkvpropedit_font_mime_command(filepath, fixes)
+    logger.info(
+        'Правка MIME шрифтов (%s): %s',
+        len(fixes),
+        '; '.join(
+            f"{fix['file_name'] or fix['id']}: "
+            f"{fix['current_mime'] or '(пусто)'} → {fix['expected_mime']}"
+            for fix in fixes
+        ),
+    )
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding='utf-8',
+        errors='replace',
+        timeout=timeout,
+        check=False,
+    )
+    if result.returncode not in (0, 1):
+        detail = (result.stderr or result.stdout or '').strip()
+        raise RuntimeError(
+            f'mkvpropedit не смог обновить MIME шрифтов (код {result.returncode}): '
+            f'{detail}'
+        )
+    if result.returncode == 1:
+        logger.warning(
+            'mkvpropedit завершился с предупреждениями при правке MIME: %s',
+            (result.stderr or result.stdout or '').strip(),
+        )
+    return fixes
 
 def identify_encoded_file(filepath: str, timeout: int = 60) -> dict[str, Any]:
     """Читает дорожки закодированного файла через mkvmerge -J."""

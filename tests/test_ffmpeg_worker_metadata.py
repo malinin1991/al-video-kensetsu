@@ -101,14 +101,55 @@ def test_ffmpeg_command_never_contains_metadata_when_disabled(worker):
 
 def test_finalize_remuxes_only_when_enabled(worker):
     enabled = _job(update_metadata='true')
-    with patch.object(worker, '_run_mkvmerge_remux') as remux:
+    with patch.object(worker, '_fix_font_mimes_before_merge') as fix_fonts, patch.object(
+        worker, '_run_mkvmerge_remux'
+    ) as remux:
         worker._finalize_encoded_output(enabled, '/tmp/out.partial.mkv')
+        fix_fonts.assert_called_once_with(enabled, '/tmp/out.partial.mkv')
         remux.assert_called_once_with(enabled, '/tmp/out.partial.mkv')
 
     disabled = _job(update_metadata='false')
-    with patch.object(worker, '_run_mkvmerge_remux') as remux:
+    with patch.object(worker, '_fix_font_mimes_before_merge') as fix_fonts, patch.object(
+        worker, '_run_mkvmerge_remux'
+    ) as remux:
         worker._finalize_encoded_output(disabled, '/tmp/out.mkv')
+        fix_fonts.assert_called_once_with(disabled, '/tmp/out.mkv')
         remux.assert_not_called()
+
+
+def test_fix_font_mimes_skipped_when_remux_disabled(worker, tmp_path):
+    encode = tmp_path / 'out.mkv'
+    encode.write_bytes(b'enc')
+    job = _job(update_metadata='false')
+    job.output_path = str(encode)
+
+    with patch('app.ffmpeg_worker.fix_font_attachment_mime_types') as fix_mimes:
+        worker._fix_font_mimes_before_merge(job, str(encode))
+        fix_mimes.assert_not_called()
+
+
+def test_finalize_fixes_font_mimes_before_remux(worker, tmp_path):
+    encode = tmp_path / 'out.partial.mkv'
+    encode.write_bytes(b'enc')
+    job = _job(update_metadata='true')
+    job.output_path = str(tmp_path / 'out.mkv')
+
+    with patch(
+        'app.ffmpeg_worker.fix_font_attachment_mime_types',
+        return_value=[
+            {
+                'id': 1,
+                'file_name': 'ROMC.TTF',
+                'current_mime': 'application/x-font-ttf',
+                'expected_mime': 'application/x-truetype-font',
+            }
+        ],
+    ) as fix_mimes, patch.object(worker, '_run_mkvmerge_remux') as remux:
+        worker._finalize_encoded_output(job, str(encode))
+        fix_mimes.assert_called_once_with(str(encode))
+        remux.assert_called_once_with(job, str(encode))
+        assert fix_mimes.call_count == 1
+        assert remux.call_count == 1
 
 
 def test_run_mkvmerge_remux_writes_json_and_invokes_atfile(worker, tmp_path):

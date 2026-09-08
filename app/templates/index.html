@@ -221,9 +221,21 @@
                         </h5>
                     </div>
                     <div class="col-auto">
-                        <select class="form-select form-select-sm" id="presetSelect" style="width: auto;">
-                            <option value="default">По умолчанию</option>
+                        <select class="form-select form-select-sm" id="videoSelect" name="video_id" style="width: auto;" title="Видео-профиль">
+                            <option value="hevc_rip">HEVC rip</option>
                         </select>
+                    </div>
+                    <div class="col-auto">
+                        <select class="form-select form-select-sm" id="audioSelect" name="audio_id" style="width: auto;" title="Аудио-профиль">
+                            <option value="copy">Copy</option>
+                        </select>
+                    </div>
+                    <div class="col-auto">
+                        <div class="form-check form-check-inline mb-0" title="Downmix >2ch → stereo (ATSC LoRo)">
+                            <input class="form-check-input" type="checkbox" id="audioDownmix" value="stereo">
+                            <label class="form-check-label small" for="audioDownmix">Downmix stereo</label>
+                        </div>
+                        <input type="hidden" id="audioDownmixField" name="audio_downmix" value="none">
                     </div>
                     <div class="col-auto">
                         <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" 
@@ -236,7 +248,8 @@
             <div class="collapse" id="encodingSettings">
             <div class="card-body">
                 <form id="ffmpegForm">
-                    <input type="hidden" id="presetId" name="preset_id" value="default">
+                    <input type="hidden" id="videoId" name="video_id" value="hevc_rip">
+                    <input type="hidden" id="audioId" name="audio_id" value="copy">
                     <input type="hidden" id="presetModified" name="preset_modified" value="false">
                     <div class="row">
                         <div class="col-md-6">
@@ -597,19 +610,29 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Загружаем пресеты после загрузки DOM
     setTimeout(() => {
-        // Проверяем, что элемент существует перед загрузкой
-        const presetSelect = document.getElementById('presetSelect');
-        if (presetSelect) {
+        const videoSelect = document.getElementById('videoSelect');
+        if (videoSelect) {
             loadPresets();
         }
     }, 100);
-    
-    // Обработчик изменения пресета
-    const presetSelect = document.getElementById('presetSelect');
-    if (presetSelect) {
-        presetSelect.addEventListener('change', function() {
-            onPresetSelectChange(this.value);
+
+    const videoSelect = document.getElementById('videoSelect');
+    if (videoSelect) {
+        videoSelect.addEventListener('change', function() {
+            onVideoSelectChange(this.value);
         });
+    }
+
+    const audioSelect = document.getElementById('audioSelect');
+    if (audioSelect) {
+        audioSelect.addEventListener('change', function() {
+            onAudioSelectChange(this.value);
+        });
+    }
+
+    const audioDownmixCheckbox = document.getElementById('audioDownmix');
+    if (audioDownmixCheckbox) {
+        audioDownmixCheckbox.addEventListener('change', syncAudioDownmixField);
     }
     
     // Обработчик изменения аудио кодека
@@ -619,6 +642,7 @@ document.addEventListener('DOMContentLoaded', function() {
             toggleAudioSettings(this.value);
             toggleTrackSettings('audio', this.value);
             toggleVbrOption(this.value);
+            updateDownmixAvailability();
         });
     }
     
@@ -677,24 +701,63 @@ function setupPresetModifiedTracking() {
     };
 
     ffmpegForm.querySelectorAll('input, select, textarea').forEach(element => {
-        if (element.id === 'presetId' || element.id === 'presetModified') return;
+        if (element.id === 'videoId' || element.id === 'audioId' || element.id === 'presetModified') return;
         element.addEventListener('change', markModified);
         element.addEventListener('input', markModified);
     });
 }
 
 // Функции для работы с пресетами
+window.videosCache = window.videosCache || {};
+window.audiosCache = window.audiosCache || {};
+
+function syncAudioDownmixField() {
+    const checkbox = document.getElementById('audioDownmix');
+    const field = document.getElementById('audioDownmixField');
+    if (!field) return;
+    const enabled = checkbox && checkbox.checked && !checkbox.disabled;
+    field.value = enabled ? 'stereo' : 'none';
+}
+
+function updateDownmixAvailability() {
+    const checkbox = document.getElementById('audioDownmix');
+    if (!checkbox) return;
+    const audioCodec = document.getElementById('audioCodec');
+    const codec = audioCodec ? audioCodec.value : '';
+    const disable = !codec || codec === 'copy' || codec === 'remove' || codec === 'null';
+    checkbox.disabled = disable;
+    if (disable) {
+        checkbox.checked = false;
+    }
+    syncAudioDownmixField();
+}
+
+function fillSelectOptions(selectEl, items, { disabledCheck } = {}) {
+    selectEl.innerHTML = '';
+    let firstAvailableId = null;
+    items.forEach((item) => {
+        const option = document.createElement('option');
+        option.value = item.id;
+        option.textContent = item.name;
+        const available = disabledCheck ? disabledCheck(item) : true;
+        if (!available) {
+            option.disabled = true;
+            option.textContent = `${item.name} (недоступен)`;
+        } else if (!firstAvailableId) {
+            firstAvailableId = item.id;
+        }
+        selectEl.appendChild(option);
+    });
+    return firstAvailableId;
+}
+
 function loadPresets() {
-    // Проверяем, не загружены ли уже пресеты
-    const presetSelect = document.getElementById('presetSelect');
-    if (!presetSelect) {
+    const videoSelect = document.getElementById('videoSelect');
+    const audioSelect = document.getElementById('audioSelect');
+    if (!videoSelect || !audioSelect) {
         return;
     }
-    
-    if (presetSelect.children.length > 1) {
-        return;
-    }
-    
+
     fetch('/api/presets')
         .then(response => {
             if (!response.ok) {
@@ -702,172 +765,98 @@ function loadPresets() {
             }
             return response.json();
         })
-        .then(presets => {
-            const presetSelect = document.getElementById('presetSelect');
-            if (presetSelect) {
-                // Очищаем только если есть пресеты для загрузки
-                if (presets && presets.length > 0) {
-                    presetSelect.innerHTML = '';
+        .then(payload => {
+            const videos = payload.videos || [];
+            const audios = payload.audios || [];
+            const defaults = payload.defaults || {};
 
-                    const groupOrder = ['rip', 'remux'];
-                    const groupLabels = { rip: 'rip', remux: 'remux' };
-                    const byGroup = {};
-                    presets.forEach((preset) => {
-                        const g = preset.group || 'rip';
-                        if (!byGroup[g]) byGroup[g] = [];
-                        byGroup[g].push(preset);
-                    });
-
-                    const sortedGroupKeys = [
-                        ...groupOrder.filter((g) => byGroup[g]),
-                        ...Object.keys(byGroup).filter((g) => !groupOrder.includes(g)).sort(),
-                    ];
-
-                    let firstAvailableId = null;
-                    sortedGroupKeys.forEach((groupKey) => {
-                        const optgroup = document.createElement('optgroup');
-                        optgroup.label = groupLabels[groupKey] || groupKey;
-                        byGroup[groupKey].forEach((preset) => {
-                            const option = document.createElement('option');
-                            option.value = preset.id;
-                            option.textContent = preset.name;
-                            const available = preset.available !== false;
-                            if (!available) {
-                                option.disabled = true;
-                                option.textContent = `${preset.name} (недоступен)`;
-                            } else if (!firstAvailableId) {
-                                firstAvailableId = preset.id;
-                            }
-                            optgroup.appendChild(option);
-
-                            if (window.presetsCache) {
-                                const group = preset.group || 'rip';
-                                window.presetsCache[preset.id] = `${group} / ${preset.name}`;
-                            }
-                        });
-                        presetSelect.appendChild(optgroup);
-                    });
-
-                    updateFdkCodecOption(presets);
-                    const startId = firstAvailableId || 'default';
-                    presetSelect.value = startId;
-                    loadPresetSettings(startId);
-                }
+            videos.forEach((v) => { window.videosCache[v.id] = v; });
+            audios.forEach((a) => { window.audiosCache[a.id] = a; });
+            if (window.presetsCache) {
+                videos.forEach((v) => { window.presetsCache[v.id] = v.name; });
+                audios.forEach((a) => { window.presetsCache[a.id] = a.name; });
             }
+
+            const firstVideo = fillSelectOptions(videoSelect, videos);
+            const firstAudio = fillSelectOptions(audioSelect, audios, {
+                disabledCheck: (a) => a.available !== false,
+            });
+            updateFdkCodecOption(audios);
+
+            const startVideo = defaults.video_id || firstVideo || 'hevc_rip';
+            const startAudio = defaults.audio_id || firstAudio || 'copy';
+            videoSelect.value = startVideo;
+            audioSelect.value = startAudio;
+            applyLayerSettings(startVideo, startAudio);
         })
         .catch(error => {
             console.error('Ошибка загрузки пресетов:', error);
-            // Показываем сообщение об ошибке пользователю
             showAlert('warning', 'Ошибка загрузки пресетов: ' + error.message);
-            const presetSelect = document.getElementById('presetSelect');
-            if (presetSelect) {
-                // Добавляем опцию об ошибке, но не очищаем существующие
-                const errorOption = document.createElement('option');
-                errorOption.value = 'default';
-                errorOption.textContent = 'По умолчанию (ошибка загрузки)';
-                errorOption.selected = true;
-                presetSelect.appendChild(errorOption);
-            }
         });
 }
 
-function updateFdkCodecOption(presets) {
+function updateFdkCodecOption(audios) {
     const fdkOption = document.getElementById('audioCodecFdk');
     if (!fdkOption) return;
     let hasFdk = false;
-    if (Array.isArray(presets)) {
-        hasFdk = presets.some(
-            (p) => p.audio_settings
-                && p.audio_settings.codec === 'libfdk_aac'
-                && p.available !== false
+    if (Array.isArray(audios)) {
+        hasFdk = audios.some(
+            (a) => a.codec === 'libfdk_aac' && a.available !== false
         );
     }
     fdkOption.disabled = !hasFdk;
 }
 
-function onPresetSelectChange(presetId) {
-    const presetSelect = document.getElementById('presetSelect');
-    if (!presetSelect) return;
-    const selected = presetSelect.options[presetSelect.selectedIndex];
-    if (selected && selected.disabled) {
-        // Сброс на первый доступный
-        for (let i = 0; i < presetSelect.options.length; i++) {
-            const opt = presetSelect.options[i];
-            if (opt.value && !opt.disabled) {
-                presetSelect.value = opt.value;
-                presetId = opt.value;
-                break;
+function onVideoSelectChange(videoId) {
+    const audioSelect = document.getElementById('audioSelect');
+    const audioId = audioSelect ? audioSelect.value : 'copy';
+    applyLayerSettings(videoId, audioId);
+}
+
+function onAudioSelectChange(audioId) {
+    const audioSelect = document.getElementById('audioSelect');
+    if (audioSelect) {
+        const selected = audioSelect.options[audioSelect.selectedIndex];
+        if (selected && selected.disabled) {
+            for (let i = 0; i < audioSelect.options.length; i++) {
+                const opt = audioSelect.options[i];
+                if (opt.value && !opt.disabled) {
+                    audioSelect.value = opt.value;
+                    audioId = opt.value;
+                    break;
+                }
             }
         }
     }
-    loadPresetSettings(presetId);
+    const videoSelect = document.getElementById('videoSelect');
+    const videoId = videoSelect ? videoSelect.value : 'hevc_rip';
+    applyLayerSettings(videoId, audioId);
 }
 
-function loadPresetSettings(presetId) {
-    fetch(`/api/presets/${presetId}`)
-        .then(response => {
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-            return response.json();
-        })
-        .then(preset => {
-            if (preset) {
-                applyPresetSettings(preset);
-            }
-        })
-        .catch(error => {
-            console.error('Ошибка загрузки пресета:', error);
-            showAlert('danger', 'Ошибка загрузки пресета: ' + error.message);
-        });
-}
+function applyLayerSettings(videoId, audioId) {
+    const video = window.videosCache[videoId];
+    const audio = window.audiosCache[audioId];
 
-const PRESET_FIELD_MAP = {
-    video_codec: 'videoCodec',
-    preset: 'preset',
-    crf: 'crf',
-    pixel_format: 'pixelFormat',
-    x265_params: 'x265Params',
-    tune: 'tune',
-    video_map: 'videoMap',
-    audio_map: 'audioMap',
-    subtitle_map: 'subtitleMap',
-    data_map: 'dataMap',
-    subtitle_codec: 'subtitleCodec',
-    data_codec: 'dataCodec',
-    output_format: 'outputFormat'
-};
-
-function setFormField(elementId, value) {
-    const element = document.getElementById(elementId);
-    if (!element) return;
-    if (value === null || value === undefined || value === '') return;
-    element.value = value;
-}
-
-function applyPresetSettings(preset) {
-    console.log('Применяем пресет:', preset.id, preset.name);
-
-    const presetIdField = document.getElementById('presetId');
-    if (presetIdField) {
-        presetIdField.value = preset.id;
-    }
+    const videoIdField = document.getElementById('videoId');
+    if (videoIdField) videoIdField.value = videoId;
+    const audioIdField = document.getElementById('audioId');
+    if (audioIdField) audioIdField.value = audioId;
 
     const presetModified = document.getElementById('presetModified');
-    if (presetModified) {
-        presetModified.value = 'false';
+    if (presetModified) presetModified.value = 'false';
+
+    if (video) {
+        Object.entries(VIDEO_FIELD_MAP).forEach(([key, elementId]) => {
+            if (video[key] !== null && video[key] !== undefined && video[key] !== '') {
+                setFormField(elementId, video[key]);
+            }
+        });
     }
 
-    Object.entries(PRESET_FIELD_MAP).forEach(([presetKey, elementId]) => {
-        if (preset[presetKey] !== null && preset[presetKey] !== undefined && preset[presetKey] !== '') {
-            setFormField(elementId, preset[presetKey]);
-        }
-    });
-
-    if (preset.audio_settings) {
+    if (audio) {
         const audioCodec = document.getElementById('audioCodec');
         if (audioCodec) {
-            let codecValue = preset.audio_settings.codec;
+            let codecValue = audio.codec;
             if (codecValue === 'libopus') {
                 codecValue = 'opus';
             } else if (codecValue === null || codecValue === undefined) {
@@ -880,69 +869,70 @@ function applyPresetSettings(preset) {
             toggleTrackSettings('audio', codecValue);
             toggleVbrOption(codecValue);
         }
-
-        if (preset.audio_settings.bitrate) {
-            setFormField('audioBitrate', preset.audio_settings.bitrate);
-        }
-
-        if (preset.audio_settings.sample_rate) {
-            setFormField('audioSampleRate', preset.audio_settings.sample_rate);
-        }
-
-        if (preset.audio_settings.codec === 'opus' || preset.audio_settings.codec === 'libopus') {
+        if (audio.bitrate) setFormField('audioBitrate', audio.bitrate);
+        if (audio.sample_rate) setFormField('audioSampleRate', audio.sample_rate);
+        if (audio.codec === 'opus' || audio.codec === 'libopus') {
             toggleVbrOption('opus');
             const audioVbr = document.getElementById('audioVbr');
-            if (audioVbr && preset.audio_settings.vbr !== undefined) {
-                audioVbr.checked = preset.audio_settings.vbr === true || preset.audio_settings.vbr === 'true';
+            if (audioVbr && audio.vbr !== undefined) {
+                audioVbr.checked = audio.vbr === true || audio.vbr === 'true';
             }
         }
-    }
-
-    if (preset.subtitle_codec !== undefined) {
-        const codecValue = preset.subtitle_codec || 'remove';
-        setFormField('subtitleCodec', codecValue);
-        toggleTrackSettings('subtitle', codecValue);
-    }
-
-    if (preset.data_codec !== undefined) {
-        const codecValue = preset.data_codec || 'remove';
-        setFormField('dataCodec', codecValue);
-        toggleTrackSettings('data', codecValue);
-    }
-
-    if (preset.audio_map === null || preset.audio_map === '') {
-        const audioCodec = document.getElementById('audioCodec');
-        if (audioCodec) {
-            audioCodec.value = 'remove';
-            toggleTrackSettings('audio', 'remove');
+        if (audio.audio_map === null || audio.audio_map === '') {
+            const codecEl = document.getElementById('audioCodec');
+            if (codecEl) {
+                codecEl.value = 'remove';
+                toggleTrackSettings('audio', 'remove');
+            }
+        } else {
+            setFormField('audioMap', audio.audio_map);
         }
-    } else {
-        setFormField('audioMap', preset.audio_map);
     }
 
-    if (preset.subtitle_map === null || preset.subtitle_map === '') {
-        const subtitleCodec = document.getElementById('subtitleCodec');
-        if (subtitleCodec) {
-            subtitleCodec.value = 'remove';
-            toggleTrackSettings('subtitle', 'remove');
-        }
+    // subs/data defaults применяются на сервере; при audio=none UI чистит maps
+    if (audioId === 'none') {
+        setFormField('subtitleCodec', 'remove');
+        toggleTrackSettings('subtitle', 'remove');
+        setFormField('dataCodec', 'remove');
+        toggleTrackSettings('data', 'remove');
     } else {
-        setFormField('subtitleMap', preset.subtitle_map);
+        setFormField('subtitleCodec', 'copy');
+        toggleTrackSettings('subtitle', 'copy');
+        setFormField('subtitleMap', '0:s?');
+        setFormField('dataCodec', 'copy');
+        toggleTrackSettings('data', 'copy');
+        setFormField('dataMap', '0:t?');
     }
 
-    if (preset.data_map === null || preset.data_map === '') {
-        const dataCodec = document.getElementById('dataCodec');
-        if (dataCodec) {
-            dataCodec.value = 'remove';
-            toggleTrackSettings('data', 'remove');
-        }
-    } else {
-        setFormField('dataMap', preset.data_map);
-    }
+    updateDownmixAvailability();
+}
+
+const VIDEO_FIELD_MAP = {
+    video_codec: 'videoCodec',
+    preset: 'preset',
+    crf: 'crf',
+    pixel_format: 'pixelFormat',
+    x265_params: 'x265Params',
+    tune: 'tune',
+    video_map: 'videoMap',
+    output_format: 'outputFormat'
+};
+
+function setFormField(elementId, value) {
+    const element = document.getElementById(elementId);
+    if (!element) return;
+    if (value === null || value === undefined || value === '') return;
+    element.value = value;
 }
 
 function resetToDefaultSettings() {
-    loadPresetSettings('default');
+    const defaultsVideo = Object.values(window.videosCache).find((v) => v.default) || { id: 'hevc_rip' };
+    const defaultsAudio = Object.values(window.audiosCache).find((a) => a.default) || { id: 'copy' };
+    const videoSelect = document.getElementById('videoSelect');
+    const audioSelect = document.getElementById('audioSelect');
+    if (videoSelect) videoSelect.value = defaultsVideo.id;
+    if (audioSelect) audioSelect.value = defaultsAudio.id;
+    applyLayerSettings(defaultsVideo.id, defaultsAudio.id);
 }
 
 function toggleAudioSettings(audioCodec) {

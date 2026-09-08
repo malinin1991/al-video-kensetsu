@@ -1,0 +1,10 @@
+id: aac_fdk
+name: AAC FDK
+description: AAC через libfdk_aac 192k (нужен nonfree FFmpeg)
+default: false
+
+codec: libfdk_aac
+bitrate: 192k
+sample_rate: "48000"
+vbr: null
+audio_map: 0:a?

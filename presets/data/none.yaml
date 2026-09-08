@@ -1,0 +1,7 @@
+id: none
+name: None
+description: Без data-потоков
+default: false
+
+data_map: null
+data_codec: null

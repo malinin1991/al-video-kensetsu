@@ -90,7 +90,7 @@ coverage.xml
 
 # Runtime data
 settings/
-data/
+/data/
 app_settings.json
 
 # Local scratch files

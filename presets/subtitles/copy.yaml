@@ -1,0 +1,7 @@
+id: copy
+name: Copy
+description: Копировать субтитры
+default: true
+
+subtitle_map: 0:s?
+subtitle_codec: copy

@@ -18,9 +18,15 @@ class LogManagerHandler(logging.Handler):
 class VideoEncoderLogger:
     """Логгер для системы кодирования видео"""
     
-    def __init__(self, log_dir: str = "/app/logs"):
+    def __init__(self, log_dir: str = None):
+        if log_dir is None:
+            log_dir = os.getenv('LOG_DIR', '/app/logs')
+        try:
+            os.makedirs(log_dir, exist_ok=True)
+        except OSError:
+            log_dir = os.path.join(os.getcwd(), 'logs')
+            os.makedirs(log_dir, exist_ok=True)
         self.log_dir = log_dir
-        os.makedirs(log_dir, exist_ok=True)
         self._setup_loggers()
 
     @staticmethod

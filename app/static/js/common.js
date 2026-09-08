@@ -251,31 +251,31 @@ window.presetsCache = {};
 
 // Функция получения названия пресета для отображения
 function getPresetDisplayName(job) {
-    // Если нет preset_id или он равен custom, возвращаем "Пользовательский"
-    if (!job.preset_id || job.preset_id === 'custom') {
-        return 'Пользовательский';
+    if (job.preset_label) {
+        return job.preset_label;
     }
-    
-    // Пытаемся получить название из кеша пресетов
-    if (window.presetsCache[job.preset_id]) {
-        return window.presetsCache[job.preset_id];
+
+    if (job.video_id === 'custom' || job.audio_id === 'custom') {
+        let label = 'Пользовательский';
+        if (job.audio_downmix === 'stereo') {
+            label += ' · stereo downmix';
+        }
+        return label;
     }
-    
-    // Словарь известных пресетов (на случай, если кеш еще не загружен)
-    const knownPresets = {
-        'default': 'rip / По умолчанию',
-        'aac_audio': 'rip / HEVC + AAC',
-        'aac_fdk_audio': 'rip / HEVC + AAC FDK',
-        'opus_audio': 'rip / HEVC + Opus',
-        'video_only': 'rip / Только видео',
-        'bd_default': 'remux / По умолчанию',
-        'bd_opus_audio': 'remux / HEVC + Opus',
-        'bd_aac_audio': 'remux / HEVC + AAC',
-        'bd_aac_fdk_audio': 'remux / HEVC + AAC FDK',
-        'bd_video_only': 'remux / Только видео'
-    };
-    
-    return knownPresets[job.preset_id] || job.preset_id || 'По умолчанию';
+
+    const videoName = (window.videosCache && window.videosCache[job.video_id]?.name)
+        || (window.presetsCache && window.presetsCache[job.video_id])
+        || job.video_id
+        || 'video';
+    const audioName = (window.audiosCache && window.audiosCache[job.audio_id]?.name)
+        || (window.presetsCache && window.presetsCache[job.audio_id])
+        || job.audio_id
+        || 'audio';
+    let label = `${videoName} / ${audioName}`;
+    if (job.audio_downmix === 'stereo') {
+        label += ' · stereo downmix';
+    }
+    return label;
 }
 
 // Функция создания элемента задания (для главной страницы)

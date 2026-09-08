@@ -16,6 +16,11 @@ from app.internal_source import (
 )
 from app.logger import logger
 from app.ffmpeg_bootstrap import get_ffmpeg_bin, get_ffprobe_bin
+from app.audio_downmix import (
+    AudioDownmixError,
+    build_downmix_plan,
+    probe_audio_streams,
+)
 from app.mkvmerge_remux import (
     build_mkvmerge_options,
     cleanup_job_sidecars,
@@ -358,11 +363,33 @@ class FFmpegWorker:
         # Обрабатываем аудио дорожки
         audio_codec = params.get('audio_codec')
         audio_map = params.get('audio_map')
+        # Канон: job.audio_downmix (синхронизирован с params в Job.__post_init__)
+        audio_downmix = str(
+            getattr(job, 'audio_downmix', None)
+            or params.get('audio_downmix', 'none')
+            or 'none'
+        ).lower()
+        if audio_downmix not in ('none', 'stereo'):
+            audio_downmix = 'none'
+        params['audio_downmix'] = audio_downmix
         
         if audio_codec in ['remove', None, 'None', '', 'null'] or \
            audio_map in [None, 'None', '', 'null']:
+            if audio_downmix == 'stereo':
+                raise ValueError(
+                    "audio_downmix=stereo недоступен без аудиодорожки"
+                )
             # Удаляем все аудио дорожки
             cmd.append('-an')
+        elif audio_downmix == 'stereo':
+            if audio_codec == 'copy':
+                raise ValueError(
+                    "audio_downmix=stereo недоступен при audio_codec=copy "
+                    "(нужно перекодирование аудио)"
+                )
+            self._append_stereo_downmix_audio(
+                cmd, job, params, audio_codec, audio_map
+            )
         else:
             # Добавляем карту аудио
             cmd.extend(['-map', str(audio_map)])
@@ -371,19 +398,7 @@ class FFmpegWorker:
             
             # Добавляем дополнительные параметры аудио если кодек не copy
             if audio_codec != 'copy':
-                if 'audio_bitrate' in params and params['audio_bitrate']:
-                    cmd.extend(['-b:a', str(params['audio_bitrate'])])
-                
-                if 'audio_sample_rate' in params and params['audio_sample_rate']:
-                    cmd.extend(['-ar', str(params['audio_sample_rate'])])
-                
-                # Добавляем VBR для Opus
-                if audio_codec == 'libopus':
-                    vbr_value = params.get('audio_vbr', 'true')
-                    if isinstance(vbr_value, str) and vbr_value.lower() in ['false', '0', 'no', 'off']:
-                        cmd.extend(['-vbr', 'off'])
-                    else:
-                        cmd.extend(['-vbr', 'on'])
+                self._append_audio_encode_options(cmd, params, audio_codec)
         
         # Обрабатываем субтитры
         subtitle_codec = params.get('subtitle_codec')
@@ -441,6 +456,53 @@ class FFmpegWorker:
         ])
         
         return cmd
+
+    def _append_audio_encode_options(self, cmd: list, params: dict, audio_codec: str) -> None:
+        """Общие -b:a / -ar / -vbr для re-encode аудио."""
+        if 'audio_bitrate' in params and params['audio_bitrate']:
+            cmd.extend(['-b:a', str(params['audio_bitrate'])])
+
+        if 'audio_sample_rate' in params and params['audio_sample_rate']:
+            cmd.extend(['-ar', str(params['audio_sample_rate'])])
+
+        if audio_codec == 'libopus':
+            vbr_value = params.get('audio_vbr', 'true')
+            if isinstance(vbr_value, str) and vbr_value.lower() in ['false', '0', 'no', 'off']:
+                cmd.extend(['-vbr', 'off'])
+            else:
+                cmd.extend(['-vbr', 'on'])
+
+    def _append_stereo_downmix_audio(
+        self,
+        cmd: list,
+        job: Job,
+        params: dict,
+        audio_codec: str,
+        audio_map,
+    ) -> None:
+        """Per-stream ATSC LoRo pan только для channels > 2; иначе обычный -map."""
+        try:
+            streams = probe_audio_streams(job.original_path, get_ffprobe_bin())
+            plan = build_downmix_plan(streams, audio_map)
+        except AudioDownmixError as exc:
+            raise ValueError(
+                f"Stereo downmix: {exc}. "
+                f"Задание остановлено (не применяем -ac 2 ко всем дорожкам)."
+            ) from exc
+
+        for line in plan.log_lines:
+            logger.main_logger.info(f"[{job.id}] {line}")
+            if self.log_callback:
+                self.log_callback(job.id, line)
+
+        if plan.filter_complex:
+            cmd.extend(['-filter_complex', plan.filter_complex])
+
+        for audio_map_arg in plan.audio_maps:
+            cmd.extend(['-map', audio_map_arg])
+
+        cmd.extend(['-c:a', str(audio_codec)])
+        self._append_audio_encode_options(cmd, params, audio_codec)
 
     def _fix_font_mimes_before_merge(self, job: Job, encode_path: str) -> None:
         """Перед remux: выравнивает MIME шрифтов по расширению."""

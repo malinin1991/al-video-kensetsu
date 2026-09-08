@@ -3,7 +3,13 @@ from enum import Enum
 from datetime import datetime, timezone
 import hashlib
 import os
-from .presets import preset_manager
+from .presets import (
+    DEFAULT_AUDIO_ID,
+    DEFAULT_VIDEO_ID,
+    display_label,
+    normalize_audio_downmix,
+    preset_manager,
+)
 
 
 def utc_now() -> datetime:
@@ -43,18 +49,34 @@ class Job:
     file_hash: str | None = None
     ffmpeg_params: dict = None
     total_frames: int | None = None
-    preset_id: str = "default"
+    video_id: str = DEFAULT_VIDEO_ID
+    audio_id: str = DEFAULT_AUDIO_ID
+    audio_downmix: str = "none"
     
     def __post_init__(self):
         if self.created_at is None:
             self.created_at = utc_now()
+        if not self.video_id:
+            self.video_id = DEFAULT_VIDEO_ID
+        if not self.audio_id:
+            self.audio_id = DEFAULT_AUDIO_ID
+        try:
+            self.audio_downmix = normalize_audio_downmix(self.audio_downmix)
+        except ValueError:
+            self.audio_downmix = "none"
         if self.ffmpeg_params is None:
-            # Загружаем параметры из пресета
-            preset = preset_manager.get_preset(self.preset_id)
-            if preset:
-                self.ffmpeg_params = preset.get_ffmpeg_params()
-            else:
+            try:
+                self.ffmpeg_params = preset_manager.resolve(
+                    self.video_id, self.audio_id, self.audio_downmix
+                )
+            except ValueError:
+                # Не оставляем label=stereo при encode=none
                 self.ffmpeg_params = self.get_default_params()
+                self.audio_downmix = normalize_audio_downmix(
+                    self.ffmpeg_params.get('audio_downmix', 'none')
+                )
+        # job.audio_downmix — канон для label и encode
+        self.ffmpeg_params['audio_downmix'] = self.audio_downmix
     
     @staticmethod
     def get_default_params():
@@ -73,6 +95,7 @@ class Job:
             'tune': 'animation',
             'audio_codec': 'copy',
             'output_format': 'matroska',
+            'audio_downmix': 'none',
             'cpu_threads': '0',
             'thread_queue_size': '0',
             'x265_pools': '0',
@@ -103,6 +126,18 @@ class Job:
         """Генерирует имя выходного файла"""
         name, ext = os.path.splitext(self.filename)
         return f"{name}_[HEVC]_{self.id[:8]}.mkv"
+
+    def display_label(self) -> str:
+        """Подпись пресета для UI: video / audio (+ downmix)."""
+        video = preset_manager.get_video(self.video_id)
+        audio = preset_manager.get_audio(self.audio_id)
+        return display_label(
+            video,
+            audio,
+            self.audio_downmix,
+            video_id=self.video_id,
+            audio_id=self.audio_id,
+        )
     
     def to_dict(self):
         """Преобразует объект в словарь для JSON сериализации"""
@@ -127,5 +162,8 @@ class Job:
             'completed_at': _iso_utc(self.completed_at),
             'ffmpeg_params': safe_ffmpeg_params,
             'total_frames': self.total_frames,
-            'preset_id': self.preset_id
+            'video_id': self.video_id,
+            'audio_id': self.audio_id,
+            'audio_downmix': self.audio_downmix,
+            'preset_label': self.display_label(),
         }

@@ -1,0 +1,10 @@
+id: copy
+name: Copy
+description: Копировать аудио без перекодирования
+default: true
+
+codec: copy
+bitrate: null
+sample_rate: null
+vbr: null
+audio_map: 0:a?

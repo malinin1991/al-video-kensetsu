@@ -99,11 +99,11 @@ class TestInternalEncodeApi:
 
         first = client.post(
             '/api/internal/encode',
-            json={'path': str(video), 'preset_id': 'aac_audio'},
+            json={'path': str(video), 'audio_id': 'aac'},
         )
         second = client.post(
             '/api/internal/encode',
-            json={'path': str(video), 'preset_id': 'opus_audio'},
+            json={'path': str(video), 'audio_id': 'opus'},
         )
         assert first.status_code == 200
         assert second.status_code == 200
@@ -163,49 +163,73 @@ class TestInternalEncodeApi:
         assert response.status_code == 400
         assert response.get_json()['error'] == 'Неподдерживаемый тип файла'
 
-    def test_unknown_preset_rejected(self, client, internal_env):
+    def test_unknown_video_rejected(self, client, internal_env):
         source_root, _uploads = internal_env
         video = make_video(source_root)
         response = client.post(
             '/api/internal/encode',
-            json={'path': str(video), 'preset': 'no_such_preset'},
+            json={'path': str(video), 'video_id': 'no_such_video'},
         )
         assert response.status_code == 400
-        assert response.get_json()['error'] == 'Неизвестный пресет: no_such_preset'
+        assert 'video' in response.get_json()['error'].lower()
 
-    def test_preset_by_id(self, client, internal_env):
+    def test_audio_by_id(self, client, internal_env):
         source_root, _uploads = internal_env
         video = make_video(source_root)
         response = client.post(
             '/api/internal/encode',
-            json={'path': str(video), 'preset_id': 'aac_audio'},
+            json={'path': str(video), 'audio_id': 'aac'},
         )
         assert response.status_code == 200
         job = response.get_json()['job']
-        assert job['preset_id'] == 'aac_audio'
+        assert job['audio_id'] == 'aac'
+        assert job['video_id'] == 'hevc_rip'
         assert job['ffmpeg_params']['audio_codec'] == 'aac'
 
-    def test_preset_by_name_ambiguous_400(self, client, internal_env):
+    def test_hevc_remux_with_opus(self, client, internal_env):
         source_root, _uploads = internal_env
         video = make_video(source_root)
         response = client.post(
             '/api/internal/encode',
-            json={'path': str(video), 'preset': 'HEVC + AAC'},
+            json={
+                'path': str(video),
+                'video_id': 'hevc_remux',
+                'audio_id': 'opus',
+            },
         )
-        assert response.status_code == 400
-        err = response.get_json()['error'].lower()
-        assert 'неоднознач' in err
-        assert 'aac_audio' in err
-        assert 'bd_aac_audio' in err
+        assert response.status_code == 200
+        job = response.get_json()['job']
+        assert job['video_id'] == 'hevc_remux'
+        assert job['audio_id'] == 'opus'
+        assert job['ffmpeg_params']['crf'] == '21'
 
-    def test_default_preset_when_omitted(self, client, internal_env):
+    def test_stereo_downmix_with_opus(self, client, internal_env):
+        source_root, _uploads = internal_env
+        video = make_video(source_root)
+        response = client.post(
+            '/api/internal/encode',
+            json={
+                'path': str(video),
+                'video_id': 'hevc_remux',
+                'audio_id': 'opus',
+                'audio_downmix': 'stereo',
+            },
+        )
+        assert response.status_code == 200
+        job = response.get_json()['job']
+        assert job['video_id'] == 'hevc_remux'
+        assert job['audio_id'] == 'opus'
+        assert job['audio_downmix'] == 'stereo'
+
+    def test_default_presets_when_omitted(self, client, internal_env):
         source_root, _uploads = internal_env
         video = make_video(source_root)
         response = client.post('/api/internal/encode', json={'path': str(video)})
         assert response.status_code == 200
         data = response.get_json()
         assert data['created'] is True
-        assert data['job']['preset_id'] == 'default'
+        assert data['job']['video_id'] == 'hevc_rip'
+        assert data['job']['audio_id'] == 'copy'
         assert data['job']['ffmpeg_params']['video_codec'] == 'libx265'
 
     def test_form_uses_ffmpeg_fields(self, client, internal_env):
@@ -215,13 +239,13 @@ class TestInternalEncodeApi:
             '/api/internal/encode',
             data={
                 'path': str(video),
-                'preset_id': 'opus_audio',
+                'audio_id': 'opus',
                 'metadata_nickname': 'Tester',
             },
         )
         assert response.status_code == 200
         job = response.get_json()['job']
-        assert job['preset_id'] == 'opus_audio'
+        assert job['audio_id'] == 'opus'
         assert job['filename'] == 'clip.mp4'
         assert job['ffmpeg_params']['metadata_nickname'] == 'Tester'
 

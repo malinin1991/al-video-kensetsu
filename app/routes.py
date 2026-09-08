@@ -5,7 +5,12 @@ import shutil
 import uuid
 import re
 from app.models.job import Job, JobStatus, utc_now
-from app.models.presets import preset_manager
+from app.models.presets import (
+    DEFAULT_AUDIO_ID,
+    DEFAULT_VIDEO_ID,
+    preset_manager,
+    validate_audio_downmix_for_params,
+)
 from app.file_utils import (
     allowed_file, calculate_file_hash,
     create_secure_filename, ensure_directory_exists, cleanup_file
@@ -252,7 +257,7 @@ def handle_full_file_upload(request):
     parsed, err = _ffmpeg_params_or_error(request)
     if err is not None:
         return err
-    ffmpeg_params, preset_id = parsed
+    ffmpeg_params, video_id, audio_id, audio_downmix = parsed
 
     if not is_batch:
         file = files[0]
@@ -261,7 +266,9 @@ def handle_full_file_upload(request):
             return jsonify({'error': 'Неподдерживаемый тип файла'}), 400
         logger.upload_logger.info(f"Начало загрузки файла: {file.filename}")
         filename = create_secure_filename(file.filename)
-        return handle_single_video_upload(file, filename, ffmpeg_params, preset_id)
+        return handle_single_video_upload(
+            file, filename, ffmpeg_params, video_id, audio_id, audio_downmix
+        )
 
     jobs = []
     errors = []
@@ -281,7 +288,8 @@ def handle_full_file_upload(request):
             file_path = os.path.join(get_uploads_dir(), unique_filename)
             file.save(file_path)
             job, job_err = create_job_from_saved_file(
-                file_path, filename, ffmpeg_params, preset_id
+                file_path, filename, ffmpeg_params, video_id,
+                audio_id, audio_downmix,
             )
             if job_err:
                 cleanup_file(file_path)
@@ -376,10 +384,13 @@ def assemble_file_from_chunks(file_id, total_chunks, request):
         if err is not None:
             cleanup_file(final_path)
             return err
-        ffmpeg_params, preset_id = parsed
+        ffmpeg_params, video_id, audio_id, audio_downmix = parsed
         
         # Обрабатываем одиночный видео файл
-        return process_single_video_file(final_path, final_filename, ffmpeg_params, preset_id)
+        return process_single_video_file(
+            final_path, final_filename, ffmpeg_params, video_id,
+            audio_id, audio_downmix,
+        )
     
     except Exception as e:
         logger.upload_logger.error(f"Ошибка сборки файла из чанков: {e}")
@@ -451,36 +462,49 @@ def get_ffmpeg_params_from_request(request):
     """Извлекает параметры FFmpeg из запроса.
 
     Raises:
-        ValueError: неизвестный preset_id, недоступный FDK, невалидный ник.
+        ValueError: неизвестный video_id/audio_id, недоступный FDK, невалидный ник.
+
+    Returns:
+        (params, video_id, audio_id, audio_downmix)
     """
-    preset_id = request.form.get('preset_id', 'default')
+    video_id = request.form.get('video_id', DEFAULT_VIDEO_ID) or DEFAULT_VIDEO_ID
+    audio_id = request.form.get('audio_id', DEFAULT_AUDIO_ID) or DEFAULT_AUDIO_ID
+    downmix_raw = request.form.get('audio_downmix', 'none')
     preset_modified = request.form.get('preset_modified', 'false') == 'true'
-    preset = preset_manager.get_preset(preset_id)
+    is_custom = (
+        video_id == 'custom'
+        or audio_id == 'custom'
+        or preset_modified
+    )
 
-    if preset_id and preset_id != 'custom' and not preset_modified and not preset:
-        raise ValueError(f'Неизвестный пресет: {preset_id}')
-
-    if preset_id != 'custom' and not preset_modified and preset:
-        _ensure_fdk_available(preset)
-        params = preset.get_ffmpeg_params()
-        final_preset_id = preset_id
-        logger.main_logger.info(f"Пресет {preset_id}: используются параметры пресета без изменений")
+    if not is_custom:
+        params, video_id, audio_id, audio_downmix, _video, audio = (
+            preset_manager.resolve_request(video_id, audio_id, downmix_raw)
+        )
+        _ensure_fdk_available(audio)
+        logger.main_logger.info(
+            f"Пресет video={video_id} / audio={audio_id} / downmix={audio_downmix}: "
+            f"параметры без изменений"
+        )
     else:
         params = _get_form_ffmpeg_params(request)
-        final_preset_id = 'custom'
+        video_id = 'custom'
+        audio_id = 'custom'
+        audio_downmix = validate_audio_downmix_for_params(params, downmix_raw)
+        params['audio_downmix'] = audio_downmix
         if params.get('audio_codec') == 'libfdk_aac' and not has_libfdk_aac():
             raise ValueError(
                 'Кодек libfdk_aac недоступен в текущей сборке FFmpeg '
                 '(нужен nonfree FFmpeg с libfdk_aac)'
             )
-        if preset_modified:
-            logger.main_logger.info(f"Пресет {preset_id}: форма изменена пользователем — custom")
-        elif not preset:
-            logger.main_logger.info(f"Пресет {preset_id} не найден — custom")
+        logger.main_logger.info(
+            f"Пресет custom (modified={preset_modified}): параметры из формы"
+        )
 
     if params.get('audio_codec') == 'opus':
         params['audio_codec'] = 'libopus'
 
+    params['audio_downmix'] = audio_downmix
     params.update({
         'cpu_threads': str(request.form.get('cpu_threads', '0')),
         'thread_queue_size': str(request.form.get('thread_queue_size', '0')),
@@ -488,22 +512,22 @@ def get_ffmpeg_params_from_request(request):
     })
     params.update(_get_metadata_params(request))
 
-    return params, final_preset_id
+    return params, video_id, audio_id, audio_downmix
 
 
-def _ensure_fdk_available(preset) -> None:
-    """ValueError, если пресет требует libfdk_aac, а кодека нет."""
-    if preset and preset.uses_fdk_aac() and not has_libfdk_aac():
+def _ensure_fdk_available(audio) -> None:
+    """ValueError, если audio-пресет требует libfdk_aac, а кодека нет."""
+    if audio and audio.uses_fdk_aac() and not has_libfdk_aac():
         raise ValueError(
-            f'Пресет «{preset.id}» требует libfdk_aac, но энкодер недоступен '
+            f'Аудио-пресет «{audio.id}» требует libfdk_aac, но энкодер недоступен '
             f'в текущей сборке FFmpeg (смонтируйте nonfree FFmpeg с FDK)'
         )
 
 
-def _preset_available(preset) -> bool:
-    if preset is None:
+def _audio_available(audio) -> bool:
+    if audio is None:
         return False
-    if preset.uses_fdk_aac():
+    if audio.uses_fdk_aac():
         return has_libfdk_aac()
     return True
 
@@ -516,7 +540,14 @@ def _ffmpeg_params_or_error(request):
         return None, (jsonify({'error': str(exc)}), 400)
 
 
-def create_job_from_saved_file(file_path, filename, ffmpeg_params, preset_id):
+def create_job_from_saved_file(
+    file_path,
+    filename,
+    ffmpeg_params,
+    video_id=DEFAULT_VIDEO_ID,
+    audio_id=DEFAULT_AUDIO_ID,
+    audio_downmix='none',
+):
     """Создаёт задание из уже сохранённого файла.
 
     Returns:
@@ -545,7 +576,9 @@ def create_job_from_saved_file(file_path, filename, ffmpeg_params, preset_id):
             original_path=bound_path,
             file_hash=file_hash,
             ffmpeg_params=ffmpeg_params,
-            preset_id=preset_id
+            video_id=video_id,
+            audio_id=audio_id,
+            audio_downmix=audio_downmix,
         )
 
         added_job = add_job(job)
@@ -558,10 +591,18 @@ def create_job_from_saved_file(file_path, filename, ffmpeg_params, preset_id):
         return None, f'Ошибка загрузки файла: {str(e)}'
 
 
-def process_single_video_file(file_path, filename, ffmpeg_params, preset_id):
+def process_single_video_file(
+    file_path,
+    filename,
+    ffmpeg_params,
+    video_id=DEFAULT_VIDEO_ID,
+    audio_id=DEFAULT_AUDIO_ID,
+    audio_downmix='none',
+):
     """Общая функция для обработки одиночного видео файла"""
     job, err = create_job_from_saved_file(
-        file_path, filename, ffmpeg_params, preset_id
+        file_path, filename, ffmpeg_params, video_id,
+        audio_id, audio_downmix,
     )
     if err:
         return jsonify({'error': err}), 500
@@ -571,7 +612,14 @@ def process_single_video_file(file_path, filename, ffmpeg_params, preset_id):
         'completed': True,
     })
 
-def handle_single_video_upload(file, filename, ffmpeg_params, preset_id):
+def handle_single_video_upload(
+    file,
+    filename,
+    ffmpeg_params,
+    video_id=DEFAULT_VIDEO_ID,
+    audio_id=DEFAULT_AUDIO_ID,
+    audio_downmix='none',
+):
     """Обрабатывает загрузку одиночного видео файла"""
     try:
         logger.upload_logger.info(f"Обработка одиночного файла: {filename}")
@@ -586,61 +634,47 @@ def handle_single_video_upload(file, filename, ffmpeg_params, preset_id):
         logger.upload_logger.info(f"Файл сохранен: {file_path}")
         
         # Используем общую функцию для обработки одиночного файла
-        return process_single_video_file(file_path, filename, ffmpeg_params, preset_id)
+        return process_single_video_file(
+            file_path, filename, ffmpeg_params, video_id,
+            audio_id, audio_downmix,
+        )
     
     except Exception as e:
         return jsonify({'error': f'Ошибка загрузки файла: {str(e)}'}), 500
 
 
-def _find_preset_by_id_or_name(preset_key):
-    """Ищет пресет по id, затем по имени.
-
-    Клиентам рекомендуется всегда передавать уникальный ``preset_id``.
-    При совпадении нескольких пресетов по display name — ValueError (400).
-    """
-    if preset_key is None:
-        return None
-    key = str(preset_key).strip()
-    if not key:
-        return None
-    preset = preset_manager.get_preset(key)
-    if preset:
-        return preset
-    lowered = key.lower()
-    matches = [
-        item for item in preset_manager.get_all_presets()
-        if item.name == key or item.name.lower() == lowered
-    ]
-    if not matches:
-        return None
-    if len(matches) > 1:
-        ids = ', '.join(item.id for item in matches)
-        raise ValueError(
-            f'Неоднозначное имя пресета «{key}»: совпали id [{ids}]. '
-            f'Укажите уникальный preset_id'
-        )
-    return matches[0]
-
-
 def _resolve_preset_from_json(payload):
-    """Пресет из JSON: предпочтительно preset_id, затем preset; иначе default."""
-    raw = payload.get('preset_id')
-    if raw is None or str(raw).strip() == '':
-        raw = payload.get('preset')
-    if raw is None or str(raw).strip() == '':
-        preset = preset_manager.get_preset('default')
-        return preset, 'default'
-    preset = _find_preset_by_id_or_name(raw)
-    if not preset:
-        raise ValueError(f'Неизвестный пресет: {raw}')
-    return preset, preset.id
+    """video_id + audio_id + downmix из JSON.
+
+    Returns:
+        (params, video_id, audio_id, audio_downmix, video, audio)
+    """
+    video_raw = payload.get('video_id')
+    if video_raw is None or str(video_raw).strip() == '':
+        video_raw = payload.get('video')
+    if video_raw is None or str(video_raw).strip() == '':
+        video_raw = DEFAULT_VIDEO_ID
+
+    audio_raw = payload.get('audio_id')
+    if audio_raw is None or str(audio_raw).strip() == '':
+        audio_raw = payload.get('audio')
+    if audio_raw is None or str(audio_raw).strip() == '':
+        audio_raw = DEFAULT_AUDIO_ID
+
+    downmix_raw = payload.get('audio_downmix', 'none')
+    return preset_manager.resolve_request(
+        str(video_raw).strip(),
+        str(audio_raw).strip(),
+        downmix_raw,
+    )
 
 
 def _ffmpeg_params_from_json(payload):
-    """Параметры FFmpeg для JSON API: пресет + ник + опциональная производительность."""
-    preset, preset_id = _resolve_preset_from_json(payload)
-    _ensure_fdk_available(preset)
-    params = preset.get_ffmpeg_params() if preset else Job.get_default_params()
+    """Параметры FFmpeg для JSON API: video + audio + downmix + ник."""
+    params, video_id, audio_id, audio_downmix, _video, audio = (
+        _resolve_preset_from_json(payload)
+    )
+    _ensure_fdk_available(audio)
     if params.get('audio_codec') == 'opus':
         params['audio_codec'] = 'libopus'
 
@@ -672,8 +706,9 @@ def _ffmpeg_params_from_json(payload):
         'update_metadata': 'true' if update_metadata else 'false',
         'metadata_nickname': nickname,
         'metadata_video_title': video_title,
+        'audio_downmix': audio_downmix,
     })
-    return params, preset_id
+    return params, video_id, audio_id, audio_downmix
 
 
 def _unwrap_flask_result(result):
@@ -712,14 +747,17 @@ def _collect_internal_paths(is_json, payload, request):
     return [path], False
 
 
-def _encode_internal_single(path, ffmpeg_params, preset_id):
+def _encode_internal_single(
+    path, ffmpeg_params, video_id, audio_id, audio_downmix
+):
     """Копирует один internal-путь и создаёт задание. Возвращает Flask response."""
     dest_path = None
     try:
         resolved = resolve_internal_source_path(path)
         dest_path, original_name = copy_internal_source_to_uploads(resolved)
         result = process_single_video_file(
-            dest_path, original_name, ffmpeg_params, preset_id
+            dest_path, original_name, ffmpeg_params, video_id,
+            audio_id, audio_downmix,
         )
         response, status_code = _unwrap_flask_result(result)
         if status_code >= 400:
@@ -749,8 +787,10 @@ def _encode_internal_single(path, ffmpeg_params, preset_id):
         raise
 
 
-def _encode_internal_batch(paths, ffmpeg_params, preset_id):
-    """Batch internal encode: один preset_id на все paths."""
+def _encode_internal_batch(
+    paths, ffmpeg_params, video_id, audio_id, audio_downmix
+):
+    """Batch internal encode: один video/audio/downmix на все paths."""
     jobs = []
     errors = []
     for path in paths:
@@ -762,7 +802,8 @@ def _encode_internal_batch(paths, ffmpeg_params, preset_id):
             dest_path, original_name = copy_internal_source_to_uploads(resolved)
             display_name = original_name
             job, job_err = create_job_from_saved_file(
-                dest_path, original_name, ffmpeg_params, preset_id
+                dest_path, original_name, ffmpeg_params, video_id,
+                audio_id, audio_downmix,
             )
             if job_err:
                 cleanup_file(dest_path)
@@ -810,21 +851,27 @@ def api_internal_encode():
         if not paths:
             return jsonify({'error': 'Не указан path / paths'}), 400
 
-        # Валидация preset_id/FDK до создания заданий
+        # Валидация video/audio/FDK/downmix до создания заданий
         if is_json:
             try:
-                ffmpeg_params, preset_id = _ffmpeg_params_from_json(payload)
+                ffmpeg_params, video_id, audio_id, audio_downmix = (
+                    _ffmpeg_params_from_json(payload)
+                )
             except ValueError as exc:
                 return jsonify({'error': str(exc)}), 400
         else:
             parsed, err = _ffmpeg_params_or_error(request)
             if err is not None:
                 return err
-            ffmpeg_params, preset_id = parsed
+            ffmpeg_params, video_id, audio_id, audio_downmix = parsed
 
         if is_batch:
-            return _encode_internal_batch(paths, ffmpeg_params, preset_id)
-        return _encode_internal_single(paths[0], ffmpeg_params, preset_id)
+            return _encode_internal_batch(
+                paths, ffmpeg_params, video_id, audio_id, audio_downmix
+            )
+        return _encode_internal_single(
+            paths[0], ffmpeg_params, video_id, audio_id, audio_downmix
+        )
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
     except Exception as e:
@@ -931,26 +978,48 @@ def stop_job(job_id):
 
 @main_bp.route('/api/presets')
 def api_presets():
-    """API для получения списка всех пресетов"""
-    presets = preset_manager.get_all_presets()
+    """API: video + audio слои (subtitles/data — внутренние defaults)."""
+    videos = preset_manager.get_all_videos()
+    audios = preset_manager.get_all_audios()
     fdk_ok = has_libfdk_aac()
-    logger.main_logger.info(f"API пресетов: возвращаем {len(presets)} пресетов")
-    result = []
-    for preset in presets:
-        available = (not preset.uses_fdk_aac()) or fdk_ok
-        result.append(preset.to_dict(available=available))
-    return jsonify(result)
+    logger.main_logger.info(
+        f"API пресетов: {len(videos)} video, {len(audios)} audio"
+    )
+    videos_out = [v.to_dict() for v in videos]
+    audios_out = []
+    for audio in audios:
+        available = (not audio.uses_fdk_aac()) or fdk_ok
+        audios_out.append(audio.to_dict(available=available))
+    return jsonify({
+        'videos': videos_out,
+        'audios': audios_out,
+        'defaults': {
+            'video_id': preset_manager.default_video_id,
+            'audio_id': preset_manager.default_audio_id,
+            'audio_downmix': 'none',
+        },
+    })
 
-@main_bp.route('/api/presets/<preset_id>')
-def api_preset(preset_id):
-    """API для получения конкретного пресета"""
-    preset = preset_manager.get_preset(preset_id)
-    if preset:
-        logger.main_logger.info(f"API пресета: возвращаем пресет {preset_id}")
-        available = _preset_available(preset)
-        return jsonify(preset.to_dict(available=available))
-    logger.main_logger.warning(f"API пресета: пресет {preset_id} не найден")
-    return jsonify({'error': 'Пресет не найден'}), 404
+
+@main_bp.route('/api/presets/resolve')
+def api_presets_resolve():
+    """Слитый ffmpeg_params для выбранных video_id + audio_id."""
+    video_id = request.args.get('video_id') or preset_manager.default_video_id
+    audio_id = request.args.get('audio_id') or preset_manager.default_audio_id
+    try:
+        params = preset_manager.resolve(video_id, audio_id, 'none')
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 404
+    video = preset_manager.get_video(video_id)
+    audio = preset_manager.get_audio(audio_id)
+    return jsonify({
+        'video_id': video_id,
+        'audio_id': audio_id,
+        'available': _audio_available(audio),
+        'video': video.to_dict() if video else None,
+        'audio': audio.to_dict(available=_audio_available(audio)) if audio else None,
+        'ffmpeg_params': params,
+    })
 
 @main_bp.route('/api/logs')
 def api_logs():

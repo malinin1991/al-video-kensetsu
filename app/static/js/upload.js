@@ -337,7 +337,7 @@ function applyUploadJobsFromResult(result) {
 }
 
 async function uploadFilesBatch(files, progressCallback) {
-    // One-shot multipart: несколько parts с именем files + один preset_id
+    // One-shot multipart: несколько parts с именем files + video_id/audio_id
     if (window.isDevelopment) {
         console.log('Batch-загрузка файлов:', files.length);
     }
@@ -552,6 +552,23 @@ function addFormDataToFormData(formData) {
     for (let [key, value] of ffmpegData.entries()) {
         formData.append(key, value);
     }
+
+    // audio_downmix живёт вне #ffmpegForm (в шапке карточки);
+    // video_id/audio_id — hidden в форме + selects в шапке
+    syncAudioDownmixField();
+    const videoSelect = document.getElementById('videoSelect');
+    const audioSelect = document.getElementById('audioSelect');
+    if (videoSelect && videoSelect.value) {
+        formData.set('video_id', videoSelect.value);
+    }
+    if (audioSelect && audioSelect.value) {
+        formData.set('audio_id', audioSelect.value);
+    }
+    const audioDownmixField = document.getElementById('audioDownmixField');
+    formData.append(
+        'audio_downmix',
+        audioDownmixField && audioDownmixField.value ? audioDownmixField.value : 'none'
+    );
     
     // Добавляем настройки производительности (id в HTML — camelCase, name — snake_case)
     const performanceFields = [

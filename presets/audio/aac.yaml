@@ -1,0 +1,10 @@
+id: aac
+name: AAC
+description: AAC 192k
+default: false
+
+codec: aac
+bitrate: 192k
+sample_rate: "48000"
+vbr: null
+audio_map: 0:a?

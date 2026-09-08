@@ -41,17 +41,11 @@ project/
 │       ├── base.html        # Базовый шаблон
 │       ├── index.html       # Главная страница
 │       └── logs.html        # Страница логов
-├── presets/                 # YAML пресеты кодирования
-│   ├── default.yaml         # rip: по умолчанию
-│   ├── aac_audio.yaml       # rip: HEVC + AAC
-│   ├── aac_fdk_audio.yaml   # rip: HEVC + AAC FDK
-│   ├── opus_audio.yaml      # rip: HEVC + Opus
-│   ├── video_only.yaml      # rip: только видео
-│   ├── bd_default.yaml      # remux: по умолчанию
-│   ├── bd_aac_audio.yaml    # remux: HEVC + AAC
-│   ├── bd_aac_fdk_audio.yaml
-│   ├── bd_opus_audio.yaml
-│   └── bd_video_only.yaml
+├── presets/                 # YAML пресеты по слоям
+│   ├── video/               # hevc_rip (default), hevc_remux
+│   ├── audio/               # copy (default), opus, aac, aac_fdk, none
+│   ├── subtitles/           # copy (default), none — не в UI
+│   └── data/                # copy (default), none — не в UI
 ├── docs/
 │   └── API.md               # Спецификация HTTP API для интеграций
 ├── docker/
@@ -188,31 +182,30 @@ python -m app.main
 
 - `GET /api/jobs` - Список всех заданий
 - `GET /api/jobs/<job_id>` - Конкретное задание
-- `POST /api/upload` - Загрузка файла или пачки (`file` / `files` + `preset_id`)
-- `POST /api/internal/encode` - Кодирование с хранилища (`path` / `paths` + `preset_id`)
+- `POST /api/upload` - Загрузка файла или пачки (`file` / `files` + `video_id` + `audio_id` + `audio_downmix`)
+- `POST /api/internal/encode` - Кодирование с хранилища (`path` / `paths` + те же поля)
 - `GET /api/jobs/<job_id>/download` - Скачивание результата
 - `DELETE /api/jobs/<job_id>/delete` - Удаление задания
 - `POST /api/jobs/<job_id>/stop` - Остановка задания
 
 ### API для пресетов
 
-- `GET /api/presets` - Список всех пресетов (`group`, `available`)
-- `GET /api/presets/<preset_id>` - Конкретный пресет
+- `GET /api/presets` - `{ videos, audios, defaults }` (`available` у audio)
+- `GET /api/presets/resolve` - слитые `ffmpeg_params` (`?video_id=&audio_id=`)
 
-### Стабильные `preset_id`
+### Слои пресетов
 
-| id | group | Описание |
-|----|-------|----------|
-| `default` | rip | CRF 23 / slow, аудио copy |
-| `aac_audio` | rip | HEVC + AAC 192k |
-| `aac_fdk_audio` | rip | HEVC + libfdk_aac 192k (нужен nonfree FFmpeg) |
-| `opus_audio` | rip | HEVC + Opus |
-| `video_only` | rip | Только видео |
-| `bd_default` | remux | CRF 21 / slower, аудио copy |
-| `bd_aac_audio` | remux | HEVC + AAC 192k |
-| `bd_aac_fdk_audio` | remux | HEVC + libfdk_aac 192k |
-| `bd_opus_audio` | remux | HEVC + Opus |
-| `bd_video_only` | remux | Только видео |
+| Слой | ids | UI |
+|------|-----|----|
+| video | `hevc_rip` (default), `hevc_remux` | да |
+| audio | `copy` (default), `opus`, `aac`, `aac_fdk`, `none` | да |
+| subtitles | `copy` (default), `none` | нет |
+| data | `copy` (default), `none` | нет |
+
+`audio_downmix`: `none` \| `stereo` — selective downmix только для дорожек с >2 каналами (ATSC LoRo pan без LFE).  
+При `audio_id=none` автоматически `subtitles=none` и `data=none`.
+
+В каждом YAML ровно один пресет слоя с `default: true`.
 
 ### WebSocket события
 
@@ -222,41 +215,50 @@ python -m app.main
 
 ## Создание собственных пресетов
 
-### Добавление нового пресета
+### Добавление video / audio пресета
 
-1. Создайте файл `presets/your_preset.yaml`
-2. Скопируйте структуру из существующего пресета (поле `group`: `rip` или `remux`)
-3. Измените параметры под ваши нужды
-4. Перезапустите приложение
+1. Создайте файл в `presets/video/` или `presets/audio/`
+2. Скопируйте структуру соседнего YAML; укажите `default: true` только у одного пресета слоя
+3. Перезапустите приложение
 
-### Пример пресета
+Subtitles/data правятся в `presets/subtitles/` и `presets/data/` (в UI пока не выводятся).
+
+### Пример video-пресета
 
 ```yaml
-id: my_custom_preset
-name: Мой пресет
-group: rip
-description: Пользовательский пресет для кодирования
+id: hevc_rip
+name: HEVC rip
+description: WEBRip / HDTV / BDRip — libx265 CRF 23 slow
+default: true
 
 video_codec: libx265
-preset: medium
-crf: 22
+preset: slow
+crf: "23"
 pixel_format: yuv420p10le
-x265_params: level=5.1:ref=4
+x265_params: level=5.1:ref=6
 tune: animation
-
-audio_settings:
-  codec: opus
-  bitrate: 192k
-  sample_rate: 48000
-
 output_format: matroska
 video_map: 0:v:0
-audio_map: 0:a?
-subtitle_map: 0:s?
-data_map: 0:t?
-subtitle_codec: copy
-data_codec: copy
 ```
+
+### Пример audio-пресета
+
+```yaml
+id: opus
+name: Opus
+description: Opus VBR 160k
+default: false
+
+codec: libopus
+bitrate: 160k
+sample_rate: "48000"
+vbr: true
+audio_map: 0:a?
+```
+
+### Stereo downmix
+
+Опция `audio_downmix=stereo` (только с re-encode аудио): по ffprobe для каждой дорожки с `channels > 2` добавляется ATSC LoRo `pan` без LFE; stereo/mono не трогаются. Ошибка probe → задание падает с ошибкой.
 
 Подробности по HTTP API и сценариям batch — в `docs/API.md`.
 

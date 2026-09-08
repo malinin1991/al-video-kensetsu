@@ -73,12 +73,18 @@ socketio = SocketIO(app,
                    ping_timeout=60,
                    ping_interval=25)
 
-# Создаем директории для данных
-os.makedirs('/app/uploads', exist_ok=True)
-os.makedirs('/app/outputs', exist_ok=True)
-os.makedirs('/app/logs', exist_ok=True)
-os.makedirs('/app/settings', exist_ok=True)
-os.makedirs('/app/data', exist_ok=True)
+# Создаем директории для данных (в Docker — /app/*; локально может быть read-only)
+for _data_dir in (
+    '/app/uploads',
+    '/app/outputs',
+    '/app/logs',
+    '/app/settings',
+    '/app/data',
+):
+    try:
+        os.makedirs(_data_dir, exist_ok=True)
+    except OSError:
+        pass
 
 # Создаем воркер для FFmpeg
 def progress_callback(job_id, progress):

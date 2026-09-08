@@ -23,7 +23,12 @@ from app.internal_source import (
 )
 from app.logger import logger
 from app.settings_store import get_metadata_nickname, load_settings, save_settings, has_saved_nickname
-from app.mkvmerge_remux import cleanup_job_sidecars, get_mkvmerge_bin, sanitize_nickname
+from app.mkvmerge_remux import (
+    cleanup_job_sidecars,
+    get_mkvmerge_bin,
+    sanitize_nickname,
+    sanitize_video_title,
+)
 from app.ffmpeg_bootstrap import (
     get_ffmpeg_bin,
     get_ffmpeg_build_info,
@@ -423,6 +428,11 @@ def _get_metadata_params(request):
     nickname = form_nickname if form_nickname else get_metadata_nickname()
     nickname = sanitize_nickname(nickname)
 
+    # Базовое имя видеодорожки: только на текущий пак, в settings не пишем
+    video_title = sanitize_video_title(
+        str(request.form.get('metadata_video_title') or '')
+    )
+
     # Автосохранение ника с формы, если пользователь ввёл значение, но не нажал «Сохранить»
     if form_nickname and form_nickname != (load_settings().get('metadata_nickname') or ''):
         try:
@@ -433,6 +443,7 @@ def _get_metadata_params(request):
     return {
         'update_metadata': 'true' if update_metadata else 'false',
         'metadata_nickname': nickname,
+        'metadata_video_title': video_title,
     }
 
 
@@ -646,6 +657,11 @@ def _ffmpeg_params_from_json(payload):
     nickname = form_nickname if form_nickname else get_metadata_nickname()
     nickname = sanitize_nickname(nickname)
 
+    video_title_raw = payload.get('metadata_video_title')
+    if video_title_raw is None:
+        video_title_raw = payload.get('video_title')
+    video_title = sanitize_video_title(str(video_title_raw or ''))
+
     update_metadata = payload.get('update_metadata', True)
     if isinstance(update_metadata, str):
         update_metadata = update_metadata.lower() in ('true', '1', 'yes', 'on')
@@ -655,6 +671,7 @@ def _ffmpeg_params_from_json(payload):
     params.update({
         'update_metadata': 'true' if update_metadata else 'false',
         'metadata_nickname': nickname,
+        'metadata_video_title': video_title,
     })
     return params, preset_id
 

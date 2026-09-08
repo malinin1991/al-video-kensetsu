@@ -27,6 +27,7 @@ from app.mkvmerge_remux import (
     job_sidecar_paths,
     resolve_language,
     sanitize_nickname,
+    sanitize_video_title,
     unescape_nickname_tag,
 )
 
@@ -108,13 +109,21 @@ def _flag_values(args: list[str], flag: str) -> list[str]:
     return [args[i + 1] for i, item in enumerate(args) if item == flag]
 
 
-def _build(identify=None, nickname='Nick', audio_codec='copy', encoded='/enc.mkv', output='/out.mkv'):
+def _build(
+    identify=None,
+    nickname='Nick',
+    video_title='',
+    audio_codec='copy',
+    encoded='/enc.mkv',
+    output='/out.mkv',
+):
     return build_mkvmerge_options(
         encoded,
         output,
         identify if identify is not None else _sample_identify(),
         {
             'metadata_nickname': nickname,
+            'metadata_video_title': video_title,
             'audio_codec': audio_codec,
             'video_codec': 'libx265',
         },
@@ -135,6 +144,14 @@ class TestSanitizeNickname:
             sanitize_nickname('bad\nnick')
         with pytest.raises(ValueError, match='длинный'):
             sanitize_nickname('x' * 65)
+
+    def test_sanitize_video_title(self):
+        assert sanitize_video_title(' Original ') == 'Original'
+        assert sanitize_video_title('') == ''
+        with pytest.raises(ValueError, match='управляющие'):
+            sanitize_video_title('bad\ntitle')
+        with pytest.raises(ValueError, match='длинное'):
+            sanitize_video_title('x' * 65)
 
     def test_escape_structural_chars(self):
         assert escape_nickname_for_tag('Nick') == 'Nick'
@@ -456,11 +473,104 @@ class TestBuildMkvmergeOptions:
         assert names.count('0:AniLiberty [Nick + Nokt]') == 1
         assert '0:AniLiberty [Nick + Nick + Nokt]' not in names
 
-    def test_video_empty_title_becomes_bracket_nick(self):
+    def test_original_plus_geekaz0id_nickname(self):
+        """Название Original + ник GeeKaZ0iD → Original [GeeKaZ0iD]."""
+        identify = _sample_identify()
+        identify['tracks'][0]['properties']['track_name'] = 'Original'
+        args = _build(identify=identify, nickname='GeeKaZ0iD', audio_codec='copy')
+        names = _flag_values(args, '--track-name')
+        assert '0:Original [GeeKaZ0iD]' in names
+        assert names.count('0:Original [GeeKaZ0iD]') == 1
+        assert '0:1' in _flag_values(args, '--original-flag')
+
+    def test_video_empty_title_becomes_original_with_nick(self):
         identify = _sample_identify()
         identify['tracks'][0]['properties']['track_name'] = ''
         args = _build(identify=identify, nickname='Nick')
-        assert '0:[Nick]' in _flag_values(args, '--track-name')
+        names = _flag_values(args, '--track-name')
+        assert '0:Original [Nick]' in names
+        assert '0:[Nick]' not in names
+        assert '0:1' in _flag_values(args, '--original-flag')
+
+    def test_video_empty_title_without_nickname_is_original(self):
+        identify = _sample_identify()
+        identify['tracks'][0]['properties']['track_name'] = ''
+        args = _build(identify=identify, nickname='')
+        names = _flag_values(args, '--track-name')
+        assert '0:Original' in names
+        assert '0:1' in _flag_values(args, '--original-flag')
+
+    def test_video_title_override_replaces_base(self):
+        identify = _sample_identify()
+        identify['tracks'][0]['properties']['track_name'] = 'ReleaseGroup'
+        args = _build(
+            identify=identify,
+            nickname='GeeKaZ0iD',
+            video_title='Original',
+            audio_codec='copy',
+        )
+        names = _flag_values(args, '--track-name')
+        assert '0:Original [GeeKaZ0iD]' in names
+        assert '0:ReleaseGroup [GeeKaZ0iD]' not in names
+        assert '0:1' in _flag_values(args, '--original-flag')
+
+    def test_video_title_override_keeps_trailing_brackets(self):
+        identify = _sample_identify()
+        identify['tracks'][0]['properties']['track_name'] = 'ReleaseGroup [Encoder]'
+        args = _build(
+            identify=identify,
+            nickname='Nick',
+            video_title='Original',
+            audio_codec='copy',
+        )
+        names = _flag_values(args, '--track-name')
+        assert '0:Original [Nick + Encoder]' in names
+        assert '0:ReleaseGroup [Nick + Encoder]' not in names
+
+    def test_video_title_override_ignored_when_multiple_videos(self):
+        identify = _sample_identify(pgs=False)
+        identify['tracks'][0]['properties']['track_name'] = 'ReleaseGroup'
+        identify['tracks'].insert(
+            1,
+            _track(
+                6, 'video',
+                codec='HEVC/H.265/MPEG-H',
+                codec_id='V_MPEGH/ISO/HEVC',
+                pixel_dimensions='1280x720',
+                language='und',
+                track_name='Alt',
+            ),
+        )
+        args = _build(
+            identify=identify,
+            nickname='Nick',
+            video_title='Original',
+            audio_codec='copy',
+        )
+        names = _flag_values(args, '--track-name')
+        assert '0:ReleaseGroup [Nick]' in names
+        assert '6:Alt [Nick]' in names
+        assert '0:Original [Nick]' not in names
+        assert '6:Original [Nick]' not in names
+
+    def test_video_empty_still_original_with_multiple_videos(self):
+        identify = _sample_identify(pgs=False)
+        identify['tracks'][0]['properties']['track_name'] = ''
+        identify['tracks'].insert(
+            1,
+            _track(
+                6, 'video',
+                codec='HEVC/H.265/MPEG-H',
+                codec_id='V_MPEGH/ISO/HEVC',
+                pixel_dimensions='1280x720',
+                language='und',
+                track_name='Alt',
+            ),
+        )
+        args = _build(identify=identify, nickname='Nick', video_title='Ignored')
+        names = _flag_values(args, '--track-name')
+        assert '0:Original [Nick]' in names
+        assert '6:Alt [Nick]' in names
 
     def test_video_escapes_structural_chars_in_nickname(self):
         identify = _sample_identify()

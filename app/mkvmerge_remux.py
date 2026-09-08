@@ -62,6 +62,22 @@ def sanitize_nickname(nickname: str) -> str:
         raise ValueError('Ник не должен содержать управляющие символы (переносы строк и т.п.)')
     return cleaned
 
+def sanitize_video_title(title: str) -> str:
+    """Нормализует базовое имя видеодорожки (без суффикса []): trim, длина, без control."""
+    cleaned = str(title or '').strip()
+    if not cleaned:
+        return ''
+    if len(cleaned) > _MAX_NICKNAME_LEN:
+        raise ValueError(
+            f'Название видеодорожки слишком длинное (макс. {_MAX_NICKNAME_LEN} символов)'
+        )
+    if _NICKNAME_CONTROL_RE.search(cleaned):
+        raise ValueError(
+            'Название видеодорожки не должно содержать управляющие символы '
+            '(переносы строк и т.п.)'
+        )
+    return cleaned
+
 def escape_nickname_for_tag(nickname: str) -> str:
     """Экранирует \\ [ ] + для безопасной вставки внутрь […]."""
     return _NICKNAME_TAG_ESCAPE_RE.sub(r'\\\1', nickname)
@@ -342,6 +358,7 @@ def build_mkvmerge_options(
     """
     params = params or {}
     nickname = sanitize_nickname(str(params.get('metadata_nickname') or ''))
+    video_title = sanitize_video_title(str(params.get('metadata_video_title') or ''))
     audio_encoded = audio_was_encoded(params)
 
     encoded_abs = os.path.abspath(encoded_path)
@@ -365,6 +382,7 @@ def build_mkvmerge_options(
                 nickname=nickname,
                 audio_encoded=audio_encoded,
                 single_video=single_video,
+                video_title=video_title,
                 subtitle_title=subtitle_titles.get(_track_id(track)),
             )
         )
@@ -399,6 +417,7 @@ def _options_for_track(
     nickname: str,
     audio_encoded: bool,
     single_video: bool,
+    video_title: str = '',
     subtitle_title: str | None = None,
 ) -> list[str]:
     tid = _track_id(track)
@@ -410,6 +429,12 @@ def _options_for_track(
         new_title = subtitle_title
         rule_title = subtitle_title
     else:
+        if track_type == 'video':
+            # Override базового имени — только при единственной video-дорожке
+            title = _resolve_video_track_title(
+                title,
+                video_title if single_video else '',
+            )
         new_title = _apply_nickname(track_type, title, nickname, audio_encoded)
         rule_title = title
 
@@ -435,6 +460,25 @@ def _options_for_track(
     )
 
     return options
+
+def _resolve_video_track_title(title: str, override: str = '') -> str:
+    """Базовое имя видеодорожки: пустое → Original; override заменяет часть без []."""
+    stripped = (title or '').strip()
+    if not stripped:
+        stripped = 'Original'
+
+    override = (override or '').strip()
+    if not override:
+        return stripped
+
+    split = _split_trailing_outer_brackets(stripped)
+    if split is None:
+        return override
+
+    _base, existing = split
+    if existing:
+        return f'{override} [{existing}]'
+    return override
 
 def _flag_options_for_track(
     tid: int,
@@ -597,12 +641,11 @@ def _nickname_already_present(existing: str, nickname: str, tag_nick: str) -> bo
 def _merge_video_nickname(title: str, nickname: str) -> str | None:
     """Вклеивает ник по хвостовой внешней паре [] (имя дорожки не важно):
     Title → Title [Nick]; Title [Nokt] → Title [Nick + Nokt].
+    Пустое имя (после resolve) не ожидается — запасной путь: Original [Nick].
     Содержимое внутри [] сохраняется дословно; в нике \\ [ ] + экранируются.
     """
     tag_nick = escape_nickname_for_tag(nickname)
-    stripped = (title or '').strip()
-    if not stripped:
-        return f'[{tag_nick}]'
+    stripped = (title or '').strip() or 'Original'
 
     split = _split_trailing_outer_brackets(stripped)
     if split is None:
@@ -610,7 +653,7 @@ def _merge_video_nickname(title: str, nickname: str) -> str | None:
 
     base, existing = split
     if not existing:
-        return f'{base} [{tag_nick}]' if base else f'[{tag_nick}]'
+        return f'{base} [{tag_nick}]' if base else f'Original [{tag_nick}]'
 
     if _nickname_already_present(existing, nickname, tag_nick):
         return None

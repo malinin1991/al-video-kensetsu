@@ -235,6 +235,25 @@ class TestInternalEncodeApi:
         assert response.status_code == 200
         assert response.get_json()['job']['ffmpeg_params']['metadata_nickname'] == 'GeeKaZ0iD'
 
+    def test_json_video_title_from_payload_not_persisted(self, client, internal_env):
+        source_root, _uploads = internal_env
+        video = make_video(source_root)
+        response = client.post(
+            '/api/internal/encode',
+            json={
+                'path': str(video),
+                'metadata_nickname': 'GeeKaZ0iD',
+                'metadata_video_title': 'Original',
+            },
+        )
+        assert response.status_code == 200
+        params = response.get_json()['job']['ffmpeg_params']
+        assert params['metadata_video_title'] == 'Original'
+        assert params['metadata_nickname'] == 'GeeKaZ0iD'
+        # Поле только на job/пак — в settings его нет
+        settings = client.get('/api/settings/metadata').get_json()
+        assert 'metadata_video_title' not in settings
+
     def test_relative_path_rejected(self, client):
         response = client.post(
             '/api/internal/encode',

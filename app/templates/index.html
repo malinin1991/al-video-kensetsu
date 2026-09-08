@@ -154,27 +154,44 @@
                         </label>
                     </div>
 
-                    <div class="mb-3" id="metadataNicknameContainer">
-                        <label for="metadataNickname" class="form-label">Ник для названия видеодорожки</label>
-                        <div class="input-group">
-                            <input type="text" class="form-control" id="metadataNickname" name="metadata_nickname"
-                                   value="{{ metadata_nickname_default }}" maxlength="64"
-                                   placeholder="Например: GeeKaZ0iD" autocomplete="username">
-                            <button class="btn btn-outline-primary" type="button" id="saveMetadataNicknameBtn">
-                                <i class="bi bi-save"></i> Сохранить
-                            </button>
+                    <div id="metadataNicknameContainer">
+                        <div class="mb-3">
+                            <label for="metadataVideoTitle" class="form-label">Название видеодорожки (без суффикса)</label>
+                            <input type="text" class="form-control" id="metadataVideoTitle" name="metadata_video_title"
+                                   value="" maxlength="64"
+                                   placeholder="Например: Original (пусто = из файла)" autocomplete="off">
+                            <div class="form-help">
+                                Подмена базового имени видеодорожки для текущего пака файлов
+                                (релизная группа → <code>Original</code> и т.п.).
+                                Действует при <strong>одной</strong> video-дорожке в файле.
+                                Часть в хвостовых <code>[]</code> сохраняется; ник дописывается отдельно.
+                                Пустое имя в файле уже считается <code>Original</code>.
+                                <strong>Не сохраняется</strong> между сессиями (в отличие от ника).
+                            </div>
                         </div>
-                        <div class="form-help">
-                            Для <strong>видео</strong> смотрим только на хвостовую внешнюю пару <code>[]</code>
-                            (содержимое внутри сохраняется как есть, вложенность не разбираем):
-                            без скобок — <code>Title [Nick]</code> (и Original, и AniLiberty, и любое другое имя);
-                            со скобками — вклеиваем в начало тега: <code>Title [Nick + …]</code>.
-                            Для аудио «Original»/«Оригинал» — простой суффикс при перекодировании аудио (без merge).
-                            Сохраняется в томе <code>settings</code> (<code>/app/settings/app_settings.json</code>) и переживает перезапуск.
-                            Структурные символы ника (<code>\</code>, <code>[</code>, <code>]</code>, <code>+</code>) при записи в тег экранируются;
-                            пустой ник тоже можно сохранить.
+
+                        <div class="mb-3">
+                            <label for="metadataNickname" class="form-label">Ник для названия видеодорожки</label>
+                            <div class="input-group">
+                                <input type="text" class="form-control" id="metadataNickname" name="metadata_nickname"
+                                       value="{{ metadata_nickname_default }}" maxlength="64"
+                                       placeholder="Например: GeeKaZ0iD" autocomplete="username">
+                                <button class="btn btn-outline-primary" type="button" id="saveMetadataNicknameBtn">
+                                    <i class="bi bi-save"></i> Сохранить
+                                </button>
+                            </div>
+                            <div class="form-help">
+                                Для <strong>видео</strong> смотрим только на хвостовую внешнюю пару <code>[]</code>
+                                (содержимое внутри сохраняется как есть, вложенность не разбираем):
+                                без скобок — <code>Title [Nick]</code> (и Original, и AniLiberty, и любое другое имя);
+                                со скобками — вклеиваем в начало тега: <code>Title [Nick + …]</code>.
+                                Для аудио «Original»/«Оригинал» — простой суффикс при перекодировании аудио (без merge).
+                                Сохраняется в томе <code>settings</code> (<code>/app/settings/app_settings.json</code>) и переживает перезапуск.
+                                Структурные символы ника (<code>\</code>, <code>[</code>, <code>]</code>, <code>+</code>) при записи в тег экранируются;
+                                пустой ник тоже можно сохранить.
+                            </div>
+                            <div class="form-text" id="metadataNicknameSaveStatus" aria-live="polite"></div>
                         </div>
-                        <div class="form-text" id="metadataNicknameSaveStatus" aria-live="polite"></div>
                     </div>
 
                     <div class="alert alert-secondary mb-0">
@@ -182,6 +199,7 @@
                             <strong>Правила:</strong>
                             глобальные и служебные теги FFmpeg удаляются;
                             единственное видео — default + forced;
+                            пустое имя видеодорожки → «Original»;
                             видео «Original»/«Оригинал» — original-flag;
                             аудио «AniLiberty» — default + forced;
                             аудио «Original»/«Оригинал» — язык оригинала и original-flag;

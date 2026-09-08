@@ -193,6 +193,9 @@ function updateJobGlobally(job) {
         
         if (jobElement) {
             // Создаем новый элемент и заменяем старый
+            if (typeof disposeActionTooltips === 'function') {
+                disposeActionTooltips(jobElement);
+            }
             const newJobElement = createJobElement(job);
             jobElement.replaceWith(newJobElement);
         } else {
@@ -212,6 +215,9 @@ function updateJobGlobally(job) {
         const jobRow = jobsTableBody.querySelector(`tr[data-job-id="${job.id}"]`);
         
         if (jobRow) {
+            if (typeof disposeActionTooltips === 'function') {
+                disposeActionTooltips(jobRow);
+            }
             const newJobRow = createJobRow(job);
             jobRow.replaceWith(newJobRow);
         } else {
@@ -264,6 +270,9 @@ function loadJobsForContainer(container) {
 
             const mergedJobs = jobs.map(job => cacheJob(job));
 
+            if (typeof disposeActionTooltips === 'function') {
+                disposeActionTooltips(container);
+            }
             container.innerHTML = '';
             if (mergedJobs.length === 0) {
                 container.innerHTML = `
@@ -302,6 +311,9 @@ function loadJobsForTable(tableBody) {
 
             const mergedJobs = jobs.map(job => cacheJob(job));
 
+            if (typeof disposeActionTooltips === 'function') {
+                disposeActionTooltips(tableBody);
+            }
             if (mergedJobs.length === 0) {
                 tableBody.innerHTML = `
                     <tr>

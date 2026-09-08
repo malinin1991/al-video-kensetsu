@@ -57,29 +57,181 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-// Функция показа уведомлений
-function showAlert(type, message) {
-    const alertDiv = document.createElement('div');
-    alertDiv.className = `alert alert-${type} alert-dismissible fade show`;
-    alertDiv.innerHTML = `
-        ${message}
-        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-    `;
-    
-    const container = document.querySelector('main .container');
-    if (container) {
-        container.insertBefore(alertDiv, container.firstChild);
-    } else {
-        // Fallback: добавляем в body
-        document.body.appendChild(alertDiv);
+const _ALERT_TYPES = new Set([
+    'success', 'danger', 'warning', 'info', 'primary', 'secondary',
+]);
+
+/** Активное подтверждение: один экземпляр модалки, без накопления listener. */
+let _activeConfirmFinish = null;
+
+function getToastContainer() {
+    let container = document.getElementById('appToastContainer');
+    if (!container) {
+        container = document.createElement('div');
+        container.id = 'appToastContainer';
+        container.className = 'app-toast-container';
+        container.setAttribute('aria-live', 'polite');
+        container.setAttribute('aria-atomic', 'true');
+        document.body.appendChild(container);
     }
-    
-    // Автоматически скрываем через 5 секунд
+    return container;
+}
+
+/** Уведомление сверху экрана (не зависит от скролла страницы). */
+function showAlert(type, message) {
+    const safeType = _ALERT_TYPES.has(type) ? type : 'info';
+    const alertDiv = document.createElement('div');
+    alertDiv.className = `alert alert-${safeType} alert-dismissible fade show`;
+    alertDiv.setAttribute('role', 'alert');
+
+    const textNode = document.createElement('span');
+    textNode.textContent = message == null ? '' : String(message);
+    alertDiv.appendChild(textNode);
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'btn-close';
+    closeBtn.setAttribute('data-bs-dismiss', 'alert');
+    closeBtn.setAttribute('aria-label', 'Закрыть');
+    alertDiv.appendChild(closeBtn);
+
+    getToastContainer().appendChild(alertDiv);
+
     setTimeout(() => {
-        if (alertDiv.parentNode) {
-            alertDiv.remove();
+        if (!alertDiv.parentNode) {
+            return;
         }
+        alertDiv.classList.remove('show');
+        setTimeout(() => alertDiv.remove(), 150);
     }, 5000);
+}
+
+/**
+ * Подтверждение через Bootstrap-модалку (вместо window.confirm).
+ * Не блокируется настройками браузера «не показывать диалоги».
+ * Повторный вызов отменяет предыдущий Promise (false) и переиспользует модалку.
+ */
+function showConfirm(options) {
+    const opts = typeof options === 'string'
+        ? { message: options }
+        : (options || {});
+
+    const title = opts.title || 'Подтверждение';
+    const message = opts.message || '';
+    const confirmText = opts.confirmText || 'Подтвердить';
+    const cancelText = opts.cancelText || 'Отмена';
+    const confirmClass = opts.confirmClass || 'btn-danger';
+
+    return new Promise((resolve) => {
+        const modalEl = document.getElementById('appConfirmModal');
+        if (!modalEl || typeof bootstrap === 'undefined' || !bootstrap.Modal) {
+            console.warn('Модалка подтверждения недоступна, действие отменено');
+            resolve(false);
+            return;
+        }
+
+        // Снять предыдущее ожидание (без лишних listener на OK)
+        if (typeof _activeConfirmFinish === 'function') {
+            const prev = _activeConfirmFinish;
+            _activeConfirmFinish = null;
+            prev(false);
+        }
+
+        const titleEl = document.getElementById('appConfirmModalTitle');
+        const bodyEl = document.getElementById('appConfirmModalBody');
+        let okBtn = document.getElementById('appConfirmOkBtn');
+        const cancelBtn = document.getElementById('appConfirmCancelBtn');
+
+        // cloneNode сбрасывает все click-listener с предыдущих вызовов
+        if (okBtn && okBtn.parentNode) {
+            const freshOk = okBtn.cloneNode(true);
+            okBtn.parentNode.replaceChild(freshOk, okBtn);
+            okBtn = freshOk;
+        }
+
+        if (titleEl) titleEl.textContent = title;
+        if (bodyEl) bodyEl.textContent = message;
+        if (okBtn) {
+            okBtn.textContent = confirmText;
+            okBtn.className = `btn ${confirmClass}`;
+        }
+        if (cancelBtn) {
+            cancelBtn.textContent = cancelText;
+        }
+
+        const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+        let settled = false;
+
+        const finish = (value) => {
+            if (settled) return;
+            settled = true;
+            if (_activeConfirmFinish === finish) {
+                _activeConfirmFinish = null;
+            }
+            okBtn?.removeEventListener('click', onOk);
+            modalEl.removeEventListener('hidden.bs.modal', onHidden);
+            resolve(value);
+        };
+
+        const onOk = () => {
+            finish(true);
+            modal.hide();
+        };
+
+        const onHidden = () => {
+            finish(false);
+        };
+
+        _activeConfirmFinish = finish;
+        okBtn?.addEventListener('click', onOk);
+        modalEl.addEventListener('hidden.bs.modal', onHidden, { once: true });
+
+        document.querySelectorAll('[data-bs-original-title]').forEach((el) => {
+            bootstrap.Tooltip.getInstance(el)?.hide();
+        });
+
+        modal.show();
+    });
+}
+
+/** Bootstrap-тултипы сверху для кнопок действий с заданиями. */
+function initActionTooltips(root) {
+    if (typeof bootstrap === 'undefined' || !bootstrap.Tooltip) {
+        return;
+    }
+    const scope = root || document;
+    const triggers = scope.querySelectorAll(
+        '.btn-delete[title], .btn-download[title], .btn-warning[title]'
+    );
+    triggers.forEach((el) => {
+        const existing = bootstrap.Tooltip.getInstance(el);
+        if (existing) {
+            existing.dispose();
+        }
+        const title = el.getAttribute('title') || el.getAttribute('data-bs-original-title');
+        if (!title) {
+            return;
+        }
+        new bootstrap.Tooltip(el, {
+            title,
+            placement: 'top',
+            container: 'body',
+            trigger: 'hover focus',
+        });
+    });
+}
+
+function disposeActionTooltips(root) {
+    if (typeof bootstrap === 'undefined' || !bootstrap.Tooltip) {
+        return;
+    }
+    const scope = root || document;
+    scope.querySelectorAll('.btn-delete, .btn-download, .btn-warning').forEach((el) => {
+        const tip = bootstrap.Tooltip.getInstance(el);
+        if (tip) {
+            tip.dispose();
+        }
+    });
 }
 
 // Функция получения текста статуса
@@ -161,7 +313,13 @@ function createJobElement(job) {
     } else if (job.status === 'cancelled') {
         progressHtml = '<span class="text-warning">Отменено</span>';
     } else {
-        progressHtml = '<span class="text-muted">Ожидание</span>';
+        // planned / очередь
+        progressHtml = `
+            <span class="text-muted">Ожидание</span>
+            <div class="text-muted small mt-1">
+                <i class="bi bi-gear"></i> Пресет: ${escapeHtml(presetName)}
+            </div>
+        `;
     }
     
     let actionsHtml = '';
@@ -215,7 +373,8 @@ function createJobElement(job) {
             ${progressHtml}
         </div>
     `;
-    
+
+    initActionTooltips(jobDiv);
     return jobDiv;
 }
 
@@ -224,6 +383,7 @@ function createJobRow(job) {
     const statusClass = `status-${job.status}`;
     const statusText = getStatusText(job.status);
     const createdDate = formatDateTime(job.created_at);
+    const presetName = getPresetDisplayName(job);
     
     let progressHtml = '';
     if (job.status === 'in_progress') {
@@ -237,7 +397,7 @@ function createJobRow(job) {
     } else if (job.status === 'cancelled') {
         progressHtml = '<span class="text-warning">Отменено</span>';
     } else {
-        progressHtml = '<span class="text-muted">Ожидание</span>';
+        progressHtml = `<span class="text-muted" title="Пресет: ${escapeHtml(presetName)}">Ожидание · ${escapeHtml(presetName)}</span>`;
     }
     
     let actionsHtml = '';
@@ -283,7 +443,8 @@ function createJobRow(job) {
         <td>${createdDate}</td>
         <td>${actionsHtml}</td>
     `;
-    
+
+    initActionTooltips(row);
     return row;
 }
 
@@ -292,64 +453,74 @@ function downloadJob(jobId) {
     window.open(`/api/jobs/${jobId}/download`, '_blank');
 }
 
-function deleteJob(jobId) {
-    if (!confirm('Удалить задание? Если оно выполняется — FFmpeg будет остановлен.')) {
+async function deleteJob(jobId) {
+    const confirmed = await showConfirm({
+        title: 'Удаление задания',
+        message: 'Удалить задание? Если оно выполняется — FFmpeg будет остановлен.',
+        confirmText: 'Удалить',
+        confirmClass: 'btn-danger',
+    });
+    if (!confirmed) {
         return;
     }
-    fetch(`/api/jobs/${jobId}/delete`, { method: 'DELETE' })
-        .then(response => {
-            if (!response.ok) {
-                throw new Error('Ошибка сервера');
-            }
-            return response.json();
-        })
-        .then(result => {
-            const jobElement = document.querySelector(`[data-job-id="${jobId}"]`);
-            if (jobElement) {
-                jobElement.remove();
-            }
-            if (typeof removeCachedJob === 'function') {
-                removeCachedJob(jobId);
-            }
-            if (typeof window.refreshJobLogOptions === 'function') {
-                window.refreshJobLogOptions();
-            }
-            const stop = result.stop || {};
-            if (stop.had_process && !stop.process_dead) {
-                showAlert('warning', 'Задание удалено, но процесс FFmpeg мог не завершиться');
-            } else if (stop.removed_from_queue) {
-                showAlert('success', 'Задание удалено из очереди');
-            } else {
-                showAlert('success', 'Задание удалено');
-            }
-        })
-        .catch(error => {
-            console.error('Ошибка удаления:', error);
-            showAlert('danger', 'Ошибка удаления задания');
-        });
+
+    try {
+        const response = await fetch(`/api/jobs/${jobId}/delete`, { method: 'DELETE' });
+        if (!response.ok) {
+            throw new Error('Ошибка сервера');
+        }
+        const result = await response.json();
+
+        const jobElement = document.querySelector(`[data-job-id="${jobId}"]`);
+        if (jobElement) {
+            disposeActionTooltips(jobElement);
+            jobElement.remove();
+        }
+        if (typeof removeCachedJob === 'function') {
+            removeCachedJob(jobId);
+        }
+        if (typeof window.refreshJobLogOptions === 'function') {
+            window.refreshJobLogOptions();
+        }
+        const stop = result.stop || {};
+        if (stop.had_process && !stop.process_dead) {
+            showAlert('warning', 'Задание удалено, но процесс FFmpeg мог не завершиться');
+        } else if (stop.removed_from_queue) {
+            showAlert('success', 'Задание удалено из очереди');
+        } else {
+            showAlert('success', 'Задание удалено');
+        }
+    } catch (error) {
+        console.error('Ошибка удаления:', error);
+        showAlert('danger', 'Ошибка удаления задания');
+    }
 }
 
-function stopJob(jobId) {
-    if (!confirm('Остановить кодирование? Процесс FFmpeg будет завершён.')) {
+async function stopJob(jobId) {
+    const confirmed = await showConfirm({
+        title: 'Остановка кодирования',
+        message: 'Остановить кодирование? Процесс FFmpeg будет завершён.',
+        confirmText: 'Остановить',
+        confirmClass: 'btn-warning',
+    });
+    if (!confirmed) {
         return;
     }
-    fetch(`/api/jobs/${jobId}/stop`, { method: 'POST' })
-        .then(response => {
-            if (!response.ok) {
-                throw new Error('Ошибка сервера');
-            }
-            return response.json();
-        })
-        .then(result => {
-            const stop = result.stop || {};
-            if (stop.had_process && !stop.process_dead) {
-                showAlert('warning', 'Отмена запрошена, но процесс FFmpeg мог не завершиться');
-            } else {
-                showAlert('success', 'Задание остановлено');
-            }
-        })
-        .catch(error => {
-            console.error('Ошибка остановки:', error);
-            showAlert('danger', 'Ошибка остановки задания');
-        });
+
+    try {
+        const response = await fetch(`/api/jobs/${jobId}/stop`, { method: 'POST' });
+        if (!response.ok) {
+            throw new Error('Ошибка сервера');
+        }
+        const result = await response.json();
+        const stop = result.stop || {};
+        if (stop.had_process && !stop.process_dead) {
+            showAlert('warning', 'Отмена запрошена, но процесс FFmpeg мог не завершиться');
+        } else {
+            showAlert('success', 'Задание остановлено');
+        }
+    } catch (error) {
+        console.error('Ошибка остановки:', error);
+        showAlert('danger', 'Ошибка остановки задания');
+    }
 }

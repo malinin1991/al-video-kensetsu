@@ -57,7 +57,7 @@ document.addEventListener('DOMContentLoaded', function() {
         
         const files = Array.from(fileInput.files);
         if (files.length === 0) {
-            alert('Выберите файл(ы) для загрузки');
+            showAlert('warning', 'Выберите файл(ы) для загрузки');
             return;
         }
         
@@ -579,6 +579,11 @@ function addFormDataToFormData(formData) {
     if (metadataNickname) {
         formData.append('metadata_nickname', metadataNickname.value.trim());
     }
+
+    const metadataVideoTitle = document.getElementById('metadataVideoTitle');
+    if (metadataVideoTitle) {
+        formData.append('metadata_video_title', metadataVideoTitle.value.trim());
+    }
     
     // Добавляем дополнительные настройки аудио если они видимы
     const audioSettings = document.getElementById('audioSettings');
@@ -748,6 +753,9 @@ function addJobToContainer(job) {
     const existingJob = container.querySelector(`[data-job-id="${job.id}"]`);
     const jobElement = createJobElement(job);
     if (existingJob) {
+        if (typeof disposeActionTooltips === 'function') {
+            disposeActionTooltips(existingJob);
+        }
         existingJob.replaceWith(jobElement);
     } else {
         container.appendChild(jobElement);
@@ -760,6 +768,9 @@ function updateJobInContainer(job) {
     
     const existingJob = document.querySelector(`[data-job-id="${job.id}"]`);
     if (existingJob) {
+        if (typeof disposeActionTooltips === 'function') {
+            disposeActionTooltips(existingJob);
+        }
         // Используем глобальную функцию createJobElement
         existingJob.replaceWith(createJobElement(job));
     } else {

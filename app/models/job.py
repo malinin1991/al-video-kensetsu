@@ -78,6 +78,7 @@ class Job:
             'x265_pools': '0',
             'update_metadata': 'true',
             'metadata_nickname': '',
+            'metadata_video_title': '',
         }
     
     def calculate_hash(self):

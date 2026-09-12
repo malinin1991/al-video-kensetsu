@@ -17,6 +17,7 @@ logger = logging.getLogger('video_encoder')
 ANILIBERTY_AUDIO_TITLE = 'AniLiberty'
 SIGN_SUBTITLE_TITLE = 'Надписи'
 SUBTITLE_TITLE = 'Субтитры'
+EMPTY_SIGNS_ASS = os.path.join(os.path.dirname(__file__), 'assets', 'empty.ass')
 
 _ORIGINAL_PREFIX_RE = re.compile(
     r'^(Original|Оригинал)(?:$|[\s\[\(\-_])',
@@ -378,6 +379,7 @@ def build_mkvmerge_options(
     tracks = _regular_tracks(identify)
     single_video = sum(1 for track in tracks if track.get('type') == 'video') == 1
     subtitle_titles = _resolve_subtitle_titles(tracks)
+    inject_empty_signs = _should_inject_empty_signs(tracks)
     for track in tracks:
         options.extend(
             _options_for_track(
@@ -392,11 +394,49 @@ def build_mkvmerge_options(
 
     options.extend(['(', encoded_abs, ')'])
 
+    if inject_empty_signs:
+        options.extend(_empty_signs_input_options())
+
     if tracks:
-        track_order = ','.join(f'0:{_track_id(track)}' for track in tracks)
+        track_order = _build_track_order(tracks, inject_empty_signs=inject_empty_signs)
         options.extend(['--track-order', track_order])
 
     return options
+
+
+def _should_inject_empty_signs(tracks: list[dict[str, Any]]) -> bool:
+    """True, если ровно одна sub-дорожка и она не default."""
+    subs = [track for track in tracks if track.get('type') == 'subtitles']
+    return len(subs) == 1 and not _is_default_track(subs[0])
+
+
+def _empty_signs_input_options() -> list[str]:
+    """Опции второго входа mkvmerge: пустой ASS как «Надписи»."""
+    ass_path = os.path.abspath(EMPTY_SIGNS_ASS)
+    if not os.path.isfile(ass_path):
+        raise FileNotFoundError(f'Не найден шаблон пустых надписей: {ass_path}')
+    return [
+        '--language', '0:ru',
+        '--track-name', f'0:{SIGN_SUBTITLE_TITLE}',
+        '--default-track-flag', '0:1',
+        '--forced-display-flag', '0:1',
+        '--sub-charset', '0:UTF-8',
+        '(', ass_path, ')',
+    ]
+
+
+def _build_track_order(
+    tracks: list[dict[str, Any]],
+    *,
+    inject_empty_signs: bool,
+) -> str:
+    """Порядок дорожек; при инъекции 1:0 вставляется перед исходной sub."""
+    parts: list[str] = []
+    for track in tracks:
+        if inject_empty_signs and track.get('type') == 'subtitles':
+            parts.append('1:0')
+        parts.append(f'0:{_track_id(track)}')
+    return ','.join(parts)
 
 def _regular_tracks(identify: dict[str, Any]) -> list[dict[str, Any]]:
     tracks = []

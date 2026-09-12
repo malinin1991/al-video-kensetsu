@@ -9,6 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from app.mkvmerge_remux import (
+    EMPTY_SIGNS_ASS,
     MIME_OPENTYPE,
     MIME_TRUETYPE,
     build_mkvmerge_options,
@@ -357,8 +358,10 @@ class TestBuildMkvmergeOptions:
         assert '1:1' in _flag_values(args, '--default-track-flag')
         assert '1:1' in _flag_values(args, '--forced-display-flag')
         assert '1:ru' in _flag_values(args, '--language')
+        assert EMPTY_SIGNS_ASS not in args
+        assert 'empty.ass' not in ''.join(args)
 
-    def test_single_non_default_subtitle_named_subtitles(self):
+    def test_single_non_default_subtitle_injects_empty_signs(self):
         identify = _sample_identify(pgs=False)
         identify['tracks'] = [
             identify['tracks'][0],
@@ -373,10 +376,18 @@ class TestBuildMkvmergeOptions:
             ),
         ]
         args = _build(identify=identify, nickname='')
+        ass_abs = str(Path(EMPTY_SIGNS_ASS).resolve())
+        assert ass_abs in args
+        assert '0:Надписи' in _flag_values(args, '--track-name')
         assert '1:Субтитры' in _flag_values(args, '--track-name')
+        assert '0:1' in _flag_values(args, '--default-track-flag')
+        assert '0:1' in _flag_values(args, '--forced-display-flag')
         assert '1:0' in _flag_values(args, '--default-track-flag')
         assert '1:0' in _flag_values(args, '--forced-display-flag')
+        assert '0:ru' in _flag_values(args, '--language')
         assert '1:ru' in _flag_values(args, '--language')
+        assert '0:UTF-8' in _flag_values(args, '--sub-charset')
+        assert args[args.index('--track-order') + 1] == '0:0,1:0,0:1'
 
     def test_two_subtitles_swap_names_by_default_flag(self):
         identify = _sample_identify(pgs=False)
@@ -391,6 +402,7 @@ class TestBuildMkvmergeOptions:
         assert '4:Надписи' in names
         assert '3:0' in defaults
         assert '4:1' in defaults
+        assert 'empty.ass' not in ''.join(args)
 
     def test_two_subtitles_without_unique_default_use_order(self):
         identify = _sample_identify(pgs=False)
@@ -400,6 +412,7 @@ class TestBuildMkvmergeOptions:
         names = _flag_values(args, '--track-name')
         assert '3:Надписи' in names
         assert '4:Субтитры' in names
+        assert 'empty.ass' not in ''.join(args)
 
     def test_no_subtitles_logs_and_skips_naming(self, caplog):
         identify = {
@@ -420,6 +433,26 @@ class TestBuildMkvmergeOptions:
         names = _flag_values(args, '--track-name')
         assert not any('Надписи' in name or 'Субтитры' in name for name in names)
         assert '0:1' in _flag_values(args, '--original-flag')
+        assert 'empty.ass' not in ''.join(args)
+
+    def test_missing_empty_signs_ass_raises(self, tmp_path):
+        identify = _sample_identify(pgs=False)
+        identify['tracks'] = [
+            identify['tracks'][0],
+            _track(
+                1, 'subtitles',
+                codec='SubRip/SRT',
+                codec_id='S_TEXT/UTF8',
+                text_subtitles=True,
+                language='jpn',
+                track_name='Dialogue',
+                default_track=False,
+            ),
+        ]
+        missing = tmp_path / 'missing.ass'
+        with patch('app.mkvmerge_remux.EMPTY_SIGNS_ASS', str(missing)):
+            with pytest.raises(FileNotFoundError, match='пустых надписей'):
+                _build(identify=identify, nickname='')
 
     def test_nickname_video_always_audio_only_original_when_encoded(self):
         copy_args = _build(audio_codec='copy', nickname='Nick')

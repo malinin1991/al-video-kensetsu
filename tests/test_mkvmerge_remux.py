@@ -228,6 +228,8 @@ class TestBuildMkvmergeOptions:
         ]
         assert '--priority' not in args
         assert '--ui-language' not in args
+        assert '--title' in args
+        assert _flag_values(args, '--title') == ['']
         assert '--no-track-tags' in args
         assert '--no-global-tags' in args
         assert '--enable-legacy-font-mime-types' in args
@@ -708,6 +710,90 @@ class TestBuildMkvmergeOptions:
         names = _flag_values(args, '--track-name')
         assert '2:Original [JP] [Nick]' in names
         assert '2:Original [Nick + JP]' not in names
+
+    def test_audio_empty_non_default_becomes_original_copy(self):
+        identify = _sample_identify()
+        identify['tracks'][1]['properties']['default_track'] = True
+        identify['tracks'][2]['properties']['track_name'] = ''
+        identify['tracks'][2]['properties']['default_track'] = False
+        args = _build(identify=identify, nickname='Nick', audio_codec='copy')
+        names = _flag_values(args, '--track-name')
+        originals = _flag_values(args, '--original-flag')
+        langs = _flag_values(args, '--language')
+        defaults = _flag_values(args, '--default-track-flag')
+        assert '2:Original' in names
+        assert '2:Original [Nick]' not in names
+        assert '2:1' in originals
+        assert '2:1' not in defaults
+        assert '2:ja' in langs
+
+    def test_audio_empty_non_default_gets_nickname_when_encoded(self):
+        identify = _sample_identify()
+        identify['tracks'][1]['properties']['default_track'] = True
+        identify['tracks'][2]['properties']['track_name'] = '   '
+        identify['tracks'][2]['properties']['default_track'] = False
+        args = _build(identify=identify, nickname='Nick', audio_codec='libopus')
+        names = _flag_values(args, '--track-name')
+        assert '2:Original [Nick]' in names
+        assert '2:1' in _flag_values(args, '--original-flag')
+        assert '2:ja' in _flag_values(args, '--language')
+
+    def test_audio_empty_default_becomes_aniliberty(self):
+        identify = _sample_identify()
+        identify['tracks'][1]['properties']['track_name'] = ''
+        identify['tracks'][1]['properties']['default_track'] = True
+        identify['tracks'][1]['properties']['language'] = 'und'
+        args = _build(identify=identify, nickname='Nick', audio_codec='libopus')
+        names = _flag_values(args, '--track-name')
+        defaults = _flag_values(args, '--default-track-flag')
+        forced = _flag_values(args, '--forced-display-flag')
+        langs = _flag_values(args, '--language')
+        originals = _flag_values(args, '--original-flag')
+        assert '1:AniLiberty' in names
+        assert '1:AniLiberty [Nick]' not in names
+        assert '1:1' in defaults
+        assert '1:1' in forced
+        assert '1:ru' in langs
+        assert '1:1' not in originals
+
+    def test_audio_empty_sole_default_becomes_aniliberty(self):
+        """Единственная безымянная default-аудио (типичный Matroska) → AniLiberty."""
+        identify = {
+            'identification_format_version': 20,
+            'container': {'recognized': True, 'supported': True, 'type': 'Matroska'},
+            'tracks': [
+                _track(
+                    0, 'video',
+                    codec='HEVC/H.265/MPEG-H',
+                    codec_id='V_MPEGH/ISO/HEVC',
+                    language='und',
+                    track_name='Original',
+                ),
+                _track(
+                    1, 'audio',
+                    codec='AAC',
+                    codec_id='A_AAC',
+                    language='',
+                    track_name='',
+                    default_track=True,
+                ),
+            ],
+        }
+        args = _build(identify=identify, nickname='Nick', audio_codec='copy')
+        assert '1:AniLiberty' in _flag_values(args, '--track-name')
+        assert '1:1' in _flag_values(args, '--default-track-flag')
+        assert '1:1' in _flag_values(args, '--forced-display-flag')
+        assert '1:ru' in _flag_values(args, '--language')
+
+    def test_audio_empty_without_default_flag_becomes_original(self):
+        """Нет ключа default_track → non-default → Original."""
+        identify = _sample_identify()
+        identify['tracks'][2]['properties']['track_name'] = ''
+        identify['tracks'][2]['properties'].pop('default_track', None)
+        args = _build(identify=identify, nickname='Nick', audio_codec='copy')
+        assert '2:Original' in _flag_values(args, '--track-name')
+        assert '2:1' in _flag_values(args, '--original-flag')
+        assert '2:ja' in _flag_values(args, '--language')
 
     def test_audio_escapes_special_nick_and_idempotent_raw_or_escaped(self):
         identify = _sample_identify()

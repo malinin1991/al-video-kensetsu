@@ -355,6 +355,7 @@ def build_mkvmerge_options(
 
     Цвет и display dimensions не трогаем — mkvmerge копирует из исходника.
     Языки — ISO 639-1. Default/forced/original ставятся явно по правилам сборки.
+    Сегментный Title контейнера всегда очищается (--title "").
     """
     params = params or {}
     nickname = sanitize_nickname(str(params.get('metadata_nickname') or ''))
@@ -365,8 +366,10 @@ def build_mkvmerge_options(
     output_abs = os.path.abspath(output_path)
 
     # Без --ui-language: Debian mkvtoolnix без перевода ru падает с кодом 2.
+    # --title "": сегментный Title контейнера (не тег) — всегда очищаем.
     options: list[str] = [
         '--output', output_abs,
+        '--title', '',
         '--no-track-tags',
         '--no-global-tags',
         '--enable-legacy-font-mime-types',
@@ -435,6 +438,9 @@ def _options_for_track(
                 title,
                 video_title if single_video else '',
             )
+        elif track_type == 'audio':
+            # Пустое имя: default → AniLiberty, иначе → Original
+            title = _resolve_audio_track_title(title, track)
         new_title = _apply_nickname(track_type, title, nickname, audio_encoded)
         rule_title = title
 
@@ -479,6 +485,15 @@ def _resolve_video_track_title(title: str, override: str = '') -> str:
     if existing:
         return f'{override} [{existing}]'
     return override
+
+def _resolve_audio_track_title(title: str, track: dict[str, Any]) -> str:
+    """Базовое имя аудио: пустое + default → AniLiberty; пустое иначе → Original."""
+    stripped = (title or '').strip()
+    if stripped:
+        return stripped
+    if _is_default_track(track):
+        return ANILIBERTY_AUDIO_TITLE
+    return 'Original'
 
 def _flag_options_for_track(
     tid: int,

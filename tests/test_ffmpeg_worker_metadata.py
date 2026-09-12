@@ -224,6 +224,8 @@ def test_run_mkvmerge_remux_writes_json_and_invokes_atfile(worker, tmp_path):
     assert not json_path.exists()
     payload = ' '.join(captured['options'])
     assert '--ui-language' not in captured['options']
+    assert '--title' in captured['options']
+    assert captured['options'][captured['options'].index('--title') + 1] == ''
     assert '--no-global-tags' in payload
     assert '--enable-legacy-font-mime-types' in captured['options']
     assert '--disable-track-statistics-tags' not in payload

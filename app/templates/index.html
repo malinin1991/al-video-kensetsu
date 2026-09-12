@@ -198,11 +198,15 @@
                         <small>
                             <strong>Правила:</strong>
                             глобальные и служебные теги FFmpeg удаляются;
+                            заголовок контейнера (mkvmerge <code>--title</code>) очищается;
                             единственное видео — default + forced;
                             пустое имя видеодорожки → «Original»;
                             видео «Original»/«Оригинал» — original-flag;
-                            аудио «AniLiberty» — default + forced;
-                            аудио «Original»/«Оригинал» — язык оригинала и original-flag;
+                            аудио «AniLiberty» — default + forced (язык ru);
+                            пустое имя default-аудио → «AniLiberty»;
+                            пустое имя non-default аудио → «Original»;
+                            аудио «Original»/«Оригинал» — язык оригинала и original-flag
+                            (при перекодировании аудио — суффикс ника);
                             субтитры: default → «Надписи» (default + forced), иначе → «Субтитры»;
                             если субтитров нет — запись в системный лог.
                         </small>

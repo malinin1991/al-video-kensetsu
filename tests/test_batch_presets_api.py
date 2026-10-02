@@ -80,7 +80,7 @@ class TestPresetsApi:
         assert 'presets' not in data and 'variations' not in data
         video_ids = {v['id'] for v in data['videos']}
         audio_ids = {a['id'] for a in data['audios']}
-        assert video_ids == {'hevc_rip', 'hevc_remux'}
+        assert video_ids == {'hevc_rip', 'hevc_remux', 'hevc_auto_level_rip'}
         assert audio_ids == {'copy', 'opus', 'aac', 'aac_fdk', 'none'}
         assert data['defaults']['video_id'] == 'hevc_rip'
         assert data['defaults']['audio_id'] == 'copy'
@@ -146,8 +146,19 @@ class TestPresetValidation:
             'preset_modified': 'true',
             'video_map': '0:v:0',
             'audio_map': '0:a:eng',
+            'subtitle_map': '0:s?',
+            'data_map': '0:t?',
+            'video_codec': 'libx265',
+            'subtitle_codec': 'copy',
+            'data_codec': 'copy',
+            'preset': 'slow',
+            'crf': '23',
+            'pixel_format': 'yuv420p10le',
+            'x265_params': 'level=5.1:ref=6',
+            'tune': 'animation',
             'audio_codec': 'libopus',
             'audio_bitrate': '160k',
+            'output_format': 'matroska',
             'file': (io.BytesIO(b'x'), 'clip.mkv'),
         }
         response = client.post(

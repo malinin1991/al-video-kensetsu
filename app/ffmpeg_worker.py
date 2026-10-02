@@ -307,39 +307,50 @@ class FFmpegWorker:
         """Строит команду FFmpeg на основе параметров задания (без тегов/метаинфы)."""
         params = copy.deepcopy(job.ffmpeg_params)
         dest_path = output_path if output_path is not None else self._encode_output_path(job)
-        
-        # Убеждаемся, что все параметры являются строками
-        for key, value in params.items():
+
+        # None не превращаем в "None"
+        for key, value in list(params.items()):
+            if value is None:
+                continue
             if not isinstance(value, str):
                 params[key] = str(value)
-        
-        # Определяем количество потоков (0 = авто, FFmpeg сам выберет)
-        cpu_threads_input = int(params.get('cpu_threads', 0))
+
+        video_codec = self._ffmpeg_opt(params.get('video_codec'))
+        output_format = self._ffmpeg_opt(params.get('output_format'))
+        if not video_codec:
+            raise ValueError('Обязательный параметр video_codec не задан')
+        if not output_format:
+            raise ValueError('Обязательный параметр output_format не задан')
+
+        cpu_threads_input = int(params.get('cpu_threads') or 0)
         cpu_threads = min(cpu_threads_input, 64) if cpu_threads_input > 0 else 0
-        
-        # Размер очереди потоков (0 = авто, FFmpeg сам выберет)
-        thread_queue_size_input = int(params.get('thread_queue_size', 0))
+
+        thread_queue_size_input = int(params.get('thread_queue_size') or 0)
         thread_queue_size = min(thread_queue_size_input, 8192) if thread_queue_size_input > 0 else 0
-        
-        # Пул потоков x265 (0 = авто, x265 сам выберет)
-        x265_pools_input = int(params.get('x265_pools', 0))
+
+        x265_pools_input = int(params.get('x265_pools') or 0)
         x265_pools = min(x265_pools_input, 32) if x265_pools_input > 0 else 0
-        
-        # Логируем настройки
+
         if cpu_threads_input == 0:
             logger.main_logger.info("Потоки CPU: автоматически (FFmpeg выберет сам, -threads не передаётся)")
         else:
             logger.main_logger.info(f"Используем {cpu_threads} потоков CPU для кодирования (libx265 frameNumThreads)")
-        
-        # Строим x265 параметры с учетом настроек производительности
-        x265_params = params['x265_params']
-        
-        # Добавляем pools/frame-threads только при явном указании x265_pools > 0
-        if x265_pools_input > 0 and 'pools=' not in x265_params:
+
+        x265_params = self._ffmpeg_opt(params.get('x265_params'))
+
+        if x265_pools_input > 0 and 'pools=' not in (x265_params or ''):
             max_frame_threads = min(x265_pools, 16)
-            x265_params += f":pools={x265_pools}:frame-threads={max_frame_threads}"
+            pools_extra = f"pools={x265_pools}:frame-threads={max_frame_threads}"
+            x265_params = (
+                f"{x265_params}:{pools_extra}" if x265_params else pools_extra
+            )
             logger.main_logger.info(f"x265 pools: {x265_pools}, frame-threads: {max_frame_threads}")
-        elif x265_pools_input > 0 and 'pools=' in x265_params and 'frame-threads=' not in x265_params:
+        elif (
+            x265_pools_input > 0
+            and x265_params
+            and 'pools=' in x265_params
+            and 'frame-threads=' not in x265_params
+        ):
             max_frame_threads = min(x265_pools, 16)
             x265_params += f":frame-threads={max_frame_threads}"
             logger.main_logger.info(f"x265 frame-threads: {max_frame_threads}")
@@ -350,20 +361,19 @@ class FFmpegWorker:
             logger.main_logger.info("thread_queue_size: автоматически (параметр не передаётся)")
         else:
             logger.main_logger.info(f"thread_queue_size: {thread_queue_size}")
-        
-        # Начинаем формировать команду
+
         cmd = [get_ffmpeg_bin()]
         if thread_queue_size_input > 0:
             cmd.extend(['-thread_queue_size', str(thread_queue_size)])
         cmd.extend(['-i', job.original_path])
-        
-        # Добавляем карту видео (всегда обязательна)
-        cmd.extend(['-map', str(params['video_map'])])
-        
-        # Обрабатываем аудио дорожки
+
+        # video_map опционален в пресете; без него всё равно нужен -map,
+        # иначе другие -map (audio/subs/data) отключат автовыбор и видео пропадёт.
+        video_map = self._ffmpeg_opt(params.get('video_map')) or '0:v:0?'
+        cmd.extend(['-map', video_map])
+
         audio_codec = params.get('audio_codec')
         audio_map = params.get('audio_map')
-        # Канон: job.audio_downmix (синхронизирован с params в Job.__post_init__)
         audio_downmix = str(
             getattr(job, 'audio_downmix', None)
             or params.get('audio_downmix', 'none')
@@ -372,14 +382,12 @@ class FFmpegWorker:
         if audio_downmix not in ('none', 'stereo'):
             audio_downmix = 'none'
         params['audio_downmix'] = audio_downmix
-        
-        if audio_codec in ['remove', None, 'None', '', 'null'] or \
-           audio_map in [None, 'None', '', 'null']:
+
+        if self._track_removed(audio_codec, audio_map, kind='audio'):
             if audio_downmix == 'stereo':
                 raise ValueError(
                     "audio_downmix=stereo недоступен без аудиодорожки"
                 )
-            # Удаляем все аудио дорожки
             cmd.append('-an')
         elif audio_downmix == 'stereo':
             if audio_codec == 'copy':
@@ -391,71 +399,90 @@ class FFmpegWorker:
                 cmd, job, params, audio_codec, audio_map
             )
         else:
-            # Добавляем карту аудио
             cmd.extend(['-map', str(audio_map)])
-            # Добавляем кодек аудио
             cmd.extend(['-c:a', str(audio_codec)])
-            
-            # Добавляем дополнительные параметры аудио если кодек не copy
             if audio_codec != 'copy':
                 self._append_audio_encode_options(cmd, params, audio_codec)
-        
-        # Обрабатываем субтитры
+
         subtitle_codec = params.get('subtitle_codec')
         subtitle_map = params.get('subtitle_map')
-        
-        if subtitle_codec in ['remove', None, 'None', '', 'null'] or \
-           subtitle_map in [None, 'None', '', 'null']:
-            # Удаляем все субтитры
+
+        if self._track_removed(subtitle_codec, subtitle_map, kind='subtitles'):
             cmd.append('-sn')
         else:
-            # Добавляем карту субтитров
             cmd.extend(['-map', str(subtitle_map)])
-            # Добавляем кодек субтитров
             cmd.extend(['-c:s', str(subtitle_codec)])
-        
-        # Обрабатываем данные
+
         data_codec = params.get('data_codec')
         data_map = params.get('data_map')
-        
-        if data_codec in ['remove', None, 'None', '', 'null'] or \
-           data_map in [None, 'None', '', 'null']:
-            # Удаляем все дополнительные данные
+
+        if self._track_removed(data_codec, data_map, kind='data'):
             cmd.append('-dn')
         else:
-            # Добавляем карту данных
             cmd.extend(['-map', str(data_map)])
-            # Добавляем кодек данных
             cmd.extend(['-c:t', str(data_codec)])
-        
-        # Добавляем кодек видео и параметры кодирования
-        cmd.extend([
-            '-c:v', str(params['video_codec']),
-            '-preset', str(params['preset']),
-            '-crf', str(params['crf']),
-            '-pix_fmt', str(params['pixel_format']),
-            '-x265-params', str(x265_params),
-        ])
 
-        tune = str(params.get('tune', '')).strip()
-        if tune in VALID_X265_TUNES:
+        cmd.extend(['-c:v', video_codec])
+        preset = self._ffmpeg_opt(params.get('preset'))
+        if preset:
+            cmd.extend(['-preset', preset])
+        crf = self._ffmpeg_opt(params.get('crf'))
+        if crf:
+            cmd.extend(['-crf', crf])
+        pixel_format = self._ffmpeg_opt(params.get('pixel_format'))
+        if pixel_format:
+            cmd.extend(['-pix_fmt', pixel_format])
+        if x265_params:
+            cmd.extend(['-x265-params', x265_params])
+
+        tune = self._ffmpeg_opt(params.get('tune'))
+        if tune and tune in VALID_X265_TUNES:
             cmd.extend(['-tune', tune])
-        elif tune.lower() not in ('none', '', 'null'):
+        elif tune and tune.lower() not in ('none', 'null'):
             logger.main_logger.warning(
                 f"Неизвестный tune x265: {tune!r}, параметр -tune не передаётся"
             )
-        
-        # -threads применяется libx265 (frameNumThreads); -thread_type — опция x264, для libx265 не используется
+
         if cpu_threads_input > 0:
             cmd.extend(['-threads', str(cpu_threads)])
 
         cmd.extend([
-            '-f', str(params['output_format']),
-            '-y',  # Перезаписывать выходной файл
-            str(dest_path)
+            '-f', output_format,
+            '-y',
+            str(dest_path),
         ])
-        
+
         return cmd
+
+    @staticmethod
+    def _ffmpeg_opt(value) -> str | None:
+        """Пустое / none / null → не передавать флаг в ffmpeg."""
+        if value is None:
+            return None
+        text = str(value).strip()
+        if text == '' or text.lower() in ('none', 'null'):
+            return None
+        return text
+
+    @staticmethod
+    def _track_removed(codec, map_value, *, kind: str) -> bool:
+        """True → -an/-sn/-dn. Половина пары codec/map → ValueError (не тихий дроп)."""
+        codec_text = None if codec is None else str(codec).strip()
+        map_text = None if map_value is None else str(map_value).strip()
+
+        def _blank(text: str | None) -> bool:
+            return text is None or text == '' or text.lower() in ('none', 'null')
+
+        codec_blank = _blank(codec_text)
+        map_blank = _blank(map_text)
+        if (codec_text or '').lower() == 'remove' or (codec_blank and map_blank):
+            return True
+        if codec_blank or map_blank:
+            raise ValueError(
+                f'{kind}: нужны оба параметра codec и map, либо оба пустые/null '
+                f'(сейчас codec={codec_text!r}, map={map_text!r})'
+            )
+        return False
 
     def _append_audio_encode_options(self, cmd: list, params: dict, audio_codec: str) -> None:
         """Общие -b:a / -ar / -vbr для re-encode аудио."""

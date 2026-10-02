@@ -396,23 +396,40 @@ def assemble_file_from_chunks(file_id, total_chunks, request):
         logger.upload_logger.error(f"Ошибка сборки файла из чанков: {e}")
         return jsonify({'error': f'Ошибка сборки файла: {str(e)}'}), 500
 
+def _form_optional(request, key: str) -> str | None:
+    """Опциональное поле формы: нет ключа / пусто → None."""
+    if key not in request.form:
+        return None
+    value = request.form.get(key)
+    if value is None or str(value).strip() == '':
+        return None
+    return value
+
+
+def _form_required(request, key: str) -> str:
+    value = _form_optional(request, key)
+    if not value:
+        raise ValueError(f'Обязательный параметр формы не задан: {key}')
+    return value
+
+
 def _get_form_ffmpeg_params(request):
-    """Извлекает параметры FFmpeg из полей формы"""
+    """Извлекает параметры FFmpeg из полей формы (без серверных дефолтов)."""
     params = {
-        'video_map': request.form.get('video_map', '0:v:0'),
-        'audio_map': request.form.get('audio_map', '0:a?'),
-        'subtitle_map': request.form.get('subtitle_map', '0:s?'),
-        'data_map': request.form.get('data_map', '0:t?'),
-        'video_codec': request.form.get('video_codec', 'libx265'),
-        'subtitle_codec': request.form.get('subtitle_codec', 'copy'),
-        'data_codec': request.form.get('data_codec', 'copy'),
-        'preset': request.form.get('preset', 'slow'),
-        'crf': request.form.get('crf', '23'),
-        'pixel_format': request.form.get('pixel_format', 'yuv420p10le'),
-        'x265_params': request.form.get('x265_params', 'level=5.1:ref=6'),
-        'tune': request.form.get('tune', 'animation'),
-        'audio_codec': request.form.get('audio_codec', 'copy'),
-        'output_format': request.form.get('output_format', 'matroska')
+        'video_map': _form_optional(request, 'video_map'),
+        'audio_map': _form_optional(request, 'audio_map'),
+        'subtitle_map': _form_optional(request, 'subtitle_map'),
+        'data_map': _form_optional(request, 'data_map'),
+        'video_codec': _form_required(request, 'video_codec'),
+        'subtitle_codec': _form_optional(request, 'subtitle_codec'),
+        'data_codec': _form_optional(request, 'data_codec'),
+        'preset': _form_optional(request, 'preset'),
+        'crf': _form_optional(request, 'crf'),
+        'pixel_format': _form_optional(request, 'pixel_format'),
+        'x265_params': _form_optional(request, 'x265_params'),
+        'tune': _form_optional(request, 'tune'),
+        'audio_codec': _form_optional(request, 'audio_codec'),
+        'output_format': _form_required(request, 'output_format'),
     }
 
     audio_bitrate = request.form.get('audio_bitrate')

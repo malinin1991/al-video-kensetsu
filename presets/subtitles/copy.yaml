@@ -1,7 +1,13 @@
+# subtitles preset
+# null map/codec — без субтитров
+# default: true — ровно у одного subtitles-пресета
+
+# --- обязательно ---
 id: copy
 name: Copy
+
+# --- необязательно ---
 description: Копировать субтитры
 default: true
-
 subtitle_map: 0:s?
 subtitle_codec: copy

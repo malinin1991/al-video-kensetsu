@@ -1,7 +1,13 @@
+# subtitles preset
+# null map/codec — без субтитров
+# default: true — ровно у одного subtitles-пресета
+
+# --- обязательно ---
 id: none
 name: None
+
+# --- необязательно ---
 description: Без субтитров
 default: false
-
 subtitle_map: null
 subtitle_codec: null

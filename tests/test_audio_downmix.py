@@ -87,21 +87,19 @@ class TestJobDownmixConsistency:
         assert job.ffmpeg_params['audio_downmix'] == 'stereo'
         assert 'stereo downmix' in job.display_label()
 
-    def test_resolve_fail_resets_downmix(self, tmp_path):
+    def test_resolve_fail_raises(self, tmp_path):
         src = tmp_path / 'in.mkv'
         src.write_bytes(b'x')
-        job = Job(
-            id='job-fallback',
-            filename='in.mkv',
-            original_path=str(src),
-            video_id='hevc_rip',
-            audio_id='copy',
-            audio_downmix='stereo',
-            ffmpeg_params=None,
-        )
-        assert job.audio_downmix == 'none'
-        assert job.ffmpeg_params['audio_downmix'] == 'none'
-        assert 'stereo downmix' not in job.display_label()
+        with pytest.raises(ValueError, match='copy'):
+            Job(
+                id='job-fallback',
+                filename='in.mkv',
+                original_path=str(src),
+                video_id='hevc_rip',
+                audio_id='copy',
+                audio_downmix='stereo',
+                ffmpeg_params=None,
+            )
 
 
 class TestBuildDownmixPlan:

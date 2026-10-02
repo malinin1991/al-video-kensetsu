@@ -65,44 +65,12 @@ class Job:
         except ValueError:
             self.audio_downmix = "none"
         if self.ffmpeg_params is None:
-            try:
-                self.ffmpeg_params = preset_manager.resolve(
-                    self.video_id, self.audio_id, self.audio_downmix
-                )
-            except ValueError:
-                # Не оставляем label=stereo при encode=none
-                self.ffmpeg_params = self.get_default_params()
-                self.audio_downmix = normalize_audio_downmix(
-                    self.ffmpeg_params.get('audio_downmix', 'none')
-                )
+            # Без запасных хардкодов: только пресет video_id/audio_id
+            self.ffmpeg_params = preset_manager.resolve(
+                self.video_id, self.audio_id, self.audio_downmix
+            )
         # job.audio_downmix — канон для label и encode
         self.ffmpeg_params['audio_downmix'] = self.audio_downmix
-    
-    @staticmethod
-    def get_default_params():
-        return {
-            'video_map': '0:v:0',
-            'audio_map': '0:a?',
-            'subtitle_map': '0:s?',
-            'data_map': '0:t?',
-            'video_codec': 'libx265',
-            'subtitle_codec': 'copy',
-            'data_codec': 'copy',
-            'preset': 'slow',
-            'crf': '23',
-            'pixel_format': 'yuv420p10le',
-            'x265_params': 'level=5.1:ref=6',
-            'tune': 'animation',
-            'audio_codec': 'copy',
-            'output_format': 'matroska',
-            'audio_downmix': 'none',
-            'cpu_threads': '0',
-            'thread_queue_size': '0',
-            'x265_pools': '0',
-            'update_metadata': 'true',
-            'metadata_nickname': '',
-            'metadata_video_title': '',
-        }
     
     def calculate_hash(self):
         """Вычисляет SHA256 хеш файла"""

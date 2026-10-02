@@ -1,8 +1,14 @@
+# audio preset
+# codec/audio_map: null — без аудио
+# default: true — ровно у одного audio-пресета
+
+# --- обязательно ---
 id: none
 name: None
+
+# --- необязательно ---
 description: Без аудио
 default: false
-
 codec: null
 bitrate: null
 sample_rate: null

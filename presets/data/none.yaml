@@ -1,7 +1,13 @@
+# data preset
+# null map/codec — без data-потоков
+# default: true — ровно у одного data-пресета
+
+# --- обязательно ---
 id: none
 name: None
+
+# --- необязательно ---
 description: Без data-потоков
 default: false
-
 data_map: null
 data_codec: null

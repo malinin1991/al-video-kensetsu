@@ -99,6 +99,39 @@ def test_ffmpeg_command_never_contains_metadata_when_disabled(worker):
     assert cmd[-1] == '/tmp/out.mkv'
 
 
+def test_ffmpeg_omits_optional_video_flags_when_unset(worker):
+    job = _job(
+        video_map=None,
+        preset=None,
+        crf=None,
+        pixel_format=None,
+        x265_params=None,
+        tune=None,
+        update_metadata='false',
+    )
+    with patch('app.ffmpeg_worker.get_ffmpeg_bin', return_value='ffmpeg'):
+        cmd = worker._build_ffmpeg_command(job)
+
+    assert cmd[cmd.index('-c:v') + 1] == 'libx265'
+    assert cmd[cmd.index('-f') + 1] == 'matroska'
+    # Без video_map — fallback, иначе -map audio/subs/data выкинет видео
+    mapped = [cmd[i + 1] for i, flag in enumerate(cmd) if flag == '-map']
+    assert '0:v:0?' in mapped
+    assert '0:v:0' not in mapped
+    assert '-preset' not in cmd
+    assert '-crf' not in cmd
+    assert '-pix_fmt' not in cmd
+    assert '-x265-params' not in cmd
+    assert '-tune' not in cmd
+
+
+def test_ffmpeg_track_pair_mismatch_raises(worker):
+    job = _job(audio_codec='copy', audio_map=None, update_metadata='false')
+    with patch('app.ffmpeg_worker.get_ffmpeg_bin', return_value='ffmpeg'):
+        with pytest.raises(ValueError, match='audio: нужны оба'):
+            worker._build_ffmpeg_command(job)
+
+
 def test_finalize_remuxes_only_when_enabled(worker):
     enabled = _job(update_metadata='true')
     with patch.object(worker, '_fix_font_mimes_before_merge') as fix_fonts, patch.object(

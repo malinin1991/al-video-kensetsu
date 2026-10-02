@@ -26,52 +26,88 @@ def _as_bool(value, default: bool = False) -> bool:
     return default
 
 
+def _require_field(
+    data: dict,
+    key: str,
+    *,
+    allow_empty: bool = False,
+    as_str: bool = False,
+):
+    """Обязательное поле YAML-пресета без подстановки дефолтов."""
+    if key not in data:
+        raise ValueError(f"В пресете отсутствует обязательное поле: {key}")
+    value = data[key]
+    if value is None:
+        raise ValueError(f"В пресете поле {key} не может быть null")
+    if as_str:
+        value = str(value)
+    if not allow_empty and isinstance(value, str) and value.strip() == "":
+        raise ValueError(f"В пресете поле {key} пустое")
+    return value
+
+
+def _optional_str(data: dict, key: str, *, as_str: bool = False) -> str | None:
+    """Опциональное поле: нет ключа / null / пусто → None (кодек/ffmpeg сами)."""
+    if key not in data or data[key] is None:
+        return None
+    value = str(data[key]) if as_str or not isinstance(data[key], str) else data[key]
+    if value.strip() == "":
+        return None
+    return value
+
+
 @dataclass
 class VideoPreset:
     id: str
     name: str
-    description: str
+    video_codec: str
+    output_format: str
+    description: str = ""
+    preset: str | None = None
+    crf: str | None = None
+    pixel_format: str | None = None
+    x265_params: str | None = None
+    tune: str | None = None
+    video_map: str | None = None
     is_default: bool = False
-    video_codec: str = "libx265"
-    preset: str = "slow"
-    crf: str = "23"
-    pixel_format: str = "yuv420p10le"
-    x265_params: str = "level=5.1:ref=6"
-    tune: str = "animation"
-    output_format: str = "matroska"
-    video_map: str = "0:v:0"
 
     def to_dict(self) -> dict:
-        return {
+        data = {
             "id": self.id,
             "name": self.name,
             "description": self.description,
             "default": self.is_default,
             "video_codec": self.video_codec,
-            "preset": self.preset,
-            "crf": self.crf,
-            "pixel_format": self.pixel_format,
-            "x265_params": self.x265_params,
-            "tune": self.tune,
             "output_format": self.output_format,
-            "video_map": self.video_map,
         }
+        for key in (
+            "preset",
+            "crf",
+            "pixel_format",
+            "x265_params",
+            "tune",
+            "video_map",
+        ):
+            value = getattr(self, key)
+            if value is not None:
+                data[key] = value
+        return data
 
     @classmethod
     def from_dict(cls, data: dict) -> VideoPreset:
         return cls(
-            id=data.get("id", ""),
-            name=data.get("name", ""),
-            description=data.get("description", ""),
+            id=_require_field(data, "id"),
+            name=_require_field(data, "name"),
+            video_codec=_require_field(data, "video_codec"),
+            output_format=_require_field(data, "output_format"),
+            description=_optional_str(data, "description") or "",
             is_default=_as_bool(data.get("default"), False),
-            video_codec=data.get("video_codec", "libx265"),
-            preset=str(data.get("preset", "slow")),
-            crf=str(data.get("crf", "23")),
-            pixel_format=data.get("pixel_format", "yuv420p10le"),
-            x265_params=data.get("x265_params", "level=5.1:ref=6"),
-            tune=data.get("tune", "animation"),
-            output_format=data.get("output_format", "matroska"),
-            video_map=data.get("video_map", "0:v:0"),
+            preset=_optional_str(data, "preset", as_str=True),
+            crf=_optional_str(data, "crf", as_str=True),
+            pixel_format=_optional_str(data, "pixel_format"),
+            x265_params=_optional_str(data, "x265_params", as_str=True),
+            tune=_optional_str(data, "tune"),
+            video_map=_optional_str(data, "video_map"),
         )
 
 
@@ -417,20 +453,24 @@ class PresetManager:
         if not os.path.isdir(directory):
             return items
         try:
-            for filename in sorted(os.listdir(directory)):
-                if not (filename.endswith(".yaml") or filename.endswith(".yml")):
-                    continue
-                path = os.path.join(directory, filename)
-                try:
-                    with open(path, "r", encoding="utf-8") as f:
-                        payload = yaml.safe_load(f)
-                    if payload and "id" in payload and "name" in payload:
-                        item = cls.from_dict(payload)
-                        items[item.id] = item
-                except Exception as exc:
-                    print(f"Ошибка загрузки пресета {filename}: {exc}")
+            filenames = sorted(os.listdir(directory))
         except Exception as exc:
             print(f"Ошибка чтения каталога {directory}: {exc}")
+            raise
+        for filename in filenames:
+            if not (filename.endswith(".yaml") or filename.endswith(".yml")):
+                continue
+            path = os.path.join(directory, filename)
+            with open(path, "r", encoding="utf-8") as f:
+                payload = yaml.safe_load(f)
+            if not payload:
+                continue
+            if "id" not in payload or "name" not in payload:
+                raise ValueError(
+                    f"Пресет {filename}: нужны поля id и name"
+                )
+            item = cls.from_dict(payload)
+            items[item.id] = item
         return items
 
     @staticmethod
@@ -478,16 +518,28 @@ class PresetManager:
                     name="HEVC rip",
                     description="WEBRip / HDTV / BDRip — libx265 CRF 23 slow",
                     is_default=True,
+                    video_codec="libx265",
                     preset="slow",
                     crf="23",
+                    pixel_format="yuv420p10le",
+                    x265_params="level=5.1:ref=6",
+                    tune="animation",
+                    output_format="matroska",
+                    video_map="0:v:0",
                 ),
                 VideoPreset(
                     id="hevc_remux",
                     name="HEVC remux",
                     description="Blu-ray remux quality — libx265 CRF 21 slower",
                     is_default=False,
+                    video_codec="libx265",
                     preset="slower",
                     crf="21",
+                    pixel_format="yuv420p10le",
+                    x265_params="level=5.1:ref=6",
+                    tune="animation",
+                    output_format="matroska",
+                    video_map="0:v:0",
                 ),
             ]
             self.videos = {v.id: v for v in videos}

@@ -1,0 +1,20 @@
+# video preset
+# нет необязательного ключа → флаг в ffmpeg не передаётся
+# video_map: нет ключа → fallback -map 0:v:0? (иначе другие -map съедят видео)
+# default: true — ровно у одного video-пресета
+# без x265_params → level/ref выбирает x265 сам
+
+# --- обязательно ---
+id: hevc_auto_level_rip
+name: HEVC rip auto level
+video_codec: libx265
+output_format: matroska
+
+# --- необязательно ---
+description: WEBRip / HDTV / BDRip — libx265 auto level CRF 23 slow
+default: false
+preset: slow
+crf: "23"
+pixel_format: yuv420p10le
+tune: animation
+video_map: 0:v:0

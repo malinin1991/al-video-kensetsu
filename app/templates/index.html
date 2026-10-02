@@ -261,8 +261,8 @@
                             <div class="mb-3">
                                 <label for="videoMap" class="form-label">Карта видео</label>
                                 <input type="text" class="form-control" id="videoMap" name="video_map" 
-                                       value="0:v:0" required>
-                                <div class="form-help">Указывает, какое видео выбрать из исходного файла</div>
+                                       value="">
+                                <div class="form-help">Пусто — ffmpeg сам выберет видеопоток</div>
                             </div>
                             
                             <div class="mb-3" id="audioMapContainer">
@@ -298,14 +298,15 @@
                         <div class="col-md-6">
                             <div class="mb-3">
                                 <label for="preset" class="form-label">Скорость кодирования</label>
-                                <select class="form-select" id="preset" name="preset" required>
+                                <select class="form-select" id="preset" name="preset">
+                                    <option value="">auto</option>
                                     <option value="ultrafast">ultrafast</option>
                                     <option value="superfast">superfast</option>
                                     <option value="veryfast">veryfast</option>
                                     <option value="faster">faster</option>
                                     <option value="fast">fast</option>
                                     <option value="medium">medium</option>
-                                    <option value="slow" selected>slow</option>
+                                    <option value="slow">slow</option>
                                     <option value="slower">slower</option>
                                     <option value="veryslow">veryslow</option>
                                 </select>
@@ -315,15 +316,16 @@
                             <div class="mb-3">
                                 <label for="crf" class="form-label">Качество (CRF)</label>
                                 <input type="number" class="form-control" id="crf" name="crf" 
-                                       value="23" min="0" max="51" required>
-                                <div class="form-help">Качество (0 — без потерь, 51 — низкое). Оптимум ~23</div>
+                                       value="" min="0" max="51">
+                                <div class="form-help">Пусто — дефолт кодека. 0 — без потерь, 51 — низкое</div>
                             </div>
                             
                             <div class="mb-3">
                                 <label for="pixelFormat" class="form-label">Формат пикселей</label>
-                                <select class="form-select" id="pixelFormat" name="pixel_format" required>
+                                <select class="form-select" id="pixelFormat" name="pixel_format">
+                                    <option value="">auto</option>
                                     <option value="yuv420p">8-bit (yuv420p)</option>
-                                    <option value="yuv420p10le" selected>10-bit (yuv420p10le)</option>
+                                    <option value="yuv420p10le">10-bit (yuv420p10le)</option>
                                     <option value="yuv444p10le">10-bit 4:4:4 (yuv444p10le)</option>
                                 </select>
                                 <div class="form-help">Формат пикселей (битность цвета)</div>
@@ -332,15 +334,16 @@
                             <div class="mb-3">
                                 <label for="x265Params" class="form-label">Параметры x265</label>
                                 <input type="text" class="form-control" id="x265Params" name="x265_params"
-                                       value="level=5.1:ref=6" required>
-                                <div class="form-help">Дополнительные параметры кодека x265</div>
+                                       value="">
+                                <div class="form-help">Пусто — флаг -x265-params не передаётся</div>
                             </div>
                             
                             <div class="mb-3">
                                 <label for="tune" class="form-label">Оптимизация</label>
-                                <select class="form-select" id="tune" name="tune" required>
+                                <select class="form-select" id="tune" name="tune">
+                                    <option value="">auto</option>
                                     <option value="none">none (без tune)</option>
-                                    <option value="animation" selected>animation</option>
+                                    <option value="animation">animation</option>
                                     <option value="grain">grain</option>
                                     <option value="psnr">psnr</option>
                                     <option value="ssim">ssim</option>
@@ -852,8 +855,14 @@ function applyLayerSettings(videoId, audioId) {
 
     if (video) {
         Object.entries(VIDEO_FIELD_MAP).forEach(([key, elementId]) => {
-            if (video[key] !== null && video[key] !== undefined && video[key] !== '') {
-                setFormField(elementId, video[key]);
+            const element = document.getElementById(elementId);
+            if (!element) return;
+            const value = video[key];
+            // Нет ключа / null / '' → очищаем (ffmpeg/кодек сами)
+            if (value === null || value === undefined || value === '') {
+                element.value = '';
+            } else {
+                element.value = value;
             }
         });
     }

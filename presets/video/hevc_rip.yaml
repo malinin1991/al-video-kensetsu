@@ -1,13 +1,20 @@
+# video preset
+# нет необязательного ключа → флаг в ffmpeg не передаётся
+# video_map: нет ключа → fallback -map 0:v:0? (иначе другие -map съедят видео)
+# default: true — ровно у одного video-пресета
+
+# --- обязательно ---
 id: hevc_rip
 name: HEVC rip
+video_codec: libx265
+output_format: matroska
+
+# --- необязательно ---
 description: WEBRip / HDTV / BDRip — libx265 CRF 23 slow
 default: true
-
-video_codec: libx265
 preset: slow
 crf: "23"
 pixel_format: yuv420p10le
 x265_params: level=5.1:ref=6
 tune: animation
-output_format: matroska
 video_map: 0:v:0

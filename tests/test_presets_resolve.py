@@ -8,9 +8,31 @@ import yaml
 from app.models.presets import PresetManager, preset_manager
 
 
+def _video_yaml(**overrides):
+    """Полный video-пресет для тестов (без опоры на код-дефолты)."""
+    payload = {
+        'id': 'hevc_rip',
+        'name': 'V',
+        'description': 'test',
+        'default': True,
+        'video_codec': 'libx265',
+        'preset': 'slow',
+        'crf': '23',
+        'pixel_format': 'yuv420p10le',
+        'x265_params': 'level=5.1:ref=6',
+        'tune': 'animation',
+        'output_format': 'matroska',
+        'video_map': '0:v:0',
+    }
+    payload.update(overrides)
+    return payload
+
+
 class TestPresetsResolve:
     def test_loaded_layers_and_defaults(self):
-        assert set(preset_manager.videos.keys()) == {'hevc_rip', 'hevc_remux'}
+        assert set(preset_manager.videos.keys()) == {
+            'hevc_rip', 'hevc_remux', 'hevc_auto_level_rip',
+        }
         assert set(preset_manager.audios.keys()) == {
             'copy', 'opus', 'aac', 'aac_fdk', 'none',
         }
@@ -20,6 +42,9 @@ class TestPresetsResolve:
         assert preset_manager.default_audio_id == 'copy'
         assert preset_manager.default_subtitles_id == 'copy'
         assert preset_manager.default_data_id == 'copy'
+        auto = preset_manager.get_video('hevc_auto_level_rip')
+        assert auto.x265_params is None
+        assert auto.preset == 'slow'
 
     def test_resolve_defaults(self):
         params = preset_manager.resolve()
@@ -52,10 +77,7 @@ class TestPresetsResolve:
         root = tmp_path / 'presets'
         for layer, files in {
             'video': [
-                ('hevc_rip.yaml', {
-                    'id': 'hevc_rip', 'name': 'V', 'default': True,
-                    'crf': '23', 'preset': 'slow',
-                }),
+                ('hevc_rip.yaml', _video_yaml()),
             ],
             'audio': [
                 ('none.yaml', {
@@ -91,10 +113,7 @@ class TestPresetsResolve:
         root = tmp_path / 'presets'
         for layer, files in {
             'video': [
-                ('hevc_rip.yaml', {
-                    'id': 'hevc_rip', 'name': 'V', 'default': True,
-                    'crf': '23', 'preset': 'slow',
-                }),
+                ('hevc_rip.yaml', _video_yaml()),
             ],
             'audio': [
                 ('none.yaml', {
@@ -154,11 +173,69 @@ class TestPresetsResolve:
         assert display_label(video, audio) == 'HEVC remux / Opus'
         assert 'stereo downmix' in display_label(video, audio, 'stereo')
 
+    def test_optional_encoding_keys_ok(self, tmp_path):
+        root = tmp_path / 'presets'
+        video_dir = root / 'video'
+        video_dir.mkdir(parents=True)
+        (video_dir / 'minimal.yaml').write_text(
+            yaml.dump({
+                'id': 'minimal',
+                'name': 'Minimal',
+                'default': True,
+                'video_codec': 'libx265',
+                'output_format': 'matroska',
+            }),
+            encoding='utf-8',
+        )
+        manager = PresetManager(presets_dir=str(root))
+        video = manager.get_video('minimal')
+        assert video.video_codec == 'libx265'
+        assert video.output_format == 'matroska'
+        assert video.preset is None
+        assert video.crf is None
+        assert video.x265_params is None
+        assert video.video_map is None
+        dumped = video.to_dict()
+        assert 'x265_params' not in dumped
+        assert 'video_map' not in dumped
+        assert dumped['video_codec'] == 'libx265'
+
+    def test_missing_video_codec_raises(self, tmp_path):
+        root = tmp_path / 'presets'
+        video_dir = root / 'video'
+        video_dir.mkdir(parents=True)
+        (video_dir / 'broken.yaml').write_text(
+            yaml.dump({
+                'id': 'broken',
+                'name': 'Broken',
+                'default': True,
+                'output_format': 'matroska',
+            }),
+            encoding='utf-8',
+        )
+        with pytest.raises(ValueError, match='video_codec'):
+            PresetManager(presets_dir=str(root))
+
+    def test_incomplete_video_yaml_raises(self, tmp_path):
+        root = tmp_path / 'presets'
+        video_dir = root / 'video'
+        video_dir.mkdir(parents=True)
+        (video_dir / 'broken.yaml').write_text(
+            yaml.dump({'id': 'broken', 'name': 'Broken', 'default': True}),
+            encoding='utf-8',
+        )
+        with pytest.raises(ValueError, match='обязательное поле'):
+            PresetManager(presets_dir=str(root))
+
     def test_exactly_one_default_per_layer(self, tmp_path):
         root = tmp_path / 'presets'
         for layer, files in {
-            'video': [('hevc_rip.yaml', {'id': 'hevc_rip', 'name': 'A', 'default': True}),
-                      ('hevc_remux.yaml', {'id': 'hevc_remux', 'name': 'B', 'default': False})],
+            'video': [
+                ('hevc_rip.yaml', _video_yaml(id='hevc_rip', name='A', default=True)),
+                ('hevc_remux.yaml', _video_yaml(
+                    id='hevc_remux', name='B', default=False, preset='slower', crf='21',
+                )),
+            ],
             'audio': [('copy.yaml', {'id': 'copy', 'name': 'C', 'default': True, 'codec': 'copy'})],
             'subtitles': [('copy.yaml', {'id': 'copy', 'name': 'S', 'default': True}),
                           ('none.yaml', {'id': 'none', 'name': 'N', 'default': False,
@@ -190,6 +267,11 @@ class TestPresetsResolve:
         assert (tmp_path / 'presets' / 'subtitles' / 'copy.yaml').exists()
         assert (tmp_path / 'presets' / 'data' / 'copy.yaml').exists()
         assert not (tmp_path / 'presets' / 'tracks').exists()
+        rip = yaml.safe_load(
+            (tmp_path / 'presets' / 'video' / 'hevc_rip.yaml').read_text(encoding='utf-8')
+        )
+        assert rip['x265_params'] == 'level=5.1:ref=6'
+        assert rip['pixel_format'] == 'yuv420p10le'
 
     def test_missing_data_layer_does_not_wipe_others(self, tmp_path):
         root = tmp_path / 'presets'
@@ -197,13 +279,13 @@ class TestPresetsResolve:
             'video': [
                 (
                     'custom_rip.yaml',
-                    {
-                        'id': 'custom_rip',
-                        'name': 'Custom rip',
-                        'default': True,
-                        'crf': '18',
-                        'preset': 'medium',
-                    },
+                    _video_yaml(
+                        id='custom_rip',
+                        name='Custom rip',
+                        default=True,
+                        crf='18',
+                        preset='medium',
+                    ),
                 ),
             ],
             'audio': [

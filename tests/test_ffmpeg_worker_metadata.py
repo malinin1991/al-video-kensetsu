@@ -36,6 +36,8 @@ def worker():
     instance._cancel_requested = set()
     instance._missing_total_frames_logged = set()
     instance._lock = threading.Lock()
+    instance.max_concurrent = 2
+    instance._job_threads = {}
     return instance
 
 
@@ -493,6 +495,9 @@ def test_remux_rc2_deletes_temp_original_keeps_internal_source(
         'app.ffmpeg_worker.get_mkvmerge_bin',
         return_value='mkvmerge',
     ), patch(
+        'app.ffmpeg_worker.fix_font_attachment_mime_types',
+        return_value=[],
+    ), patch(
         'app.ffmpeg_worker.subprocess.Popen',
         side_effect=lambda *args, **kwargs: next(procs),
     ):
@@ -543,6 +548,9 @@ def test_remux_rc2_does_not_delete_internal_original(
     ), patch(
         'app.ffmpeg_worker.get_mkvmerge_bin',
         return_value='mkvmerge',
+    ), patch(
+        'app.ffmpeg_worker.fix_font_attachment_mime_types',
+        return_value=[],
     ), patch(
         'app.ffmpeg_worker.subprocess.Popen',
         side_effect=lambda *args, **kwargs: next(procs),

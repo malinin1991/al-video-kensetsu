@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+
+{% block title %}Настройки — Система кодирования видео{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1><i class="bi bi-gear"></i> Настройки</h1>
+    <a href="/" class="btn btn-outline-primary">
+        <i class="bi bi-arrow-left"></i> Назад к кодированию
+    </a>
+</div>
+
+<div class="row">
+    <div class="col-lg-8">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-cpu"></i> Кодирование
+                </h5>
+            </div>
+            <div class="card-body">
+                <form id="appSettingsForm" novalidate>
+                    <div class="mb-3">
+                        <label for="maxConcurrentEncodes" class="form-label">
+                            Макс. одновременных кодирований
+                        </label>
+                        <input
+                            type="number"
+                            class="form-control"
+                            id="maxConcurrentEncodes"
+                            name="max_concurrent_encodes"
+                            min="{{ min_concurrent }}"
+                            max="{{ max_concurrent_limit }}"
+                            step="1"
+                            value="{{ max_concurrent_encodes }}"
+                            required
+                        >
+                        <div class="form-text">
+                            Сколько заданий кодировать параллельно
+                            (от {{ min_concurrent }} до {{ max_concurrent_limit }}).
+                            Изменение применяется сразу, без перезапуска:
+                            уже идущие encode не прерываются, новый лимит влияет
+                            на набор следующих слотов.
+                            Значение сохраняется в томе
+                            <code>settings</code>
+                            (<code>/app/settings/app_settings.json</code>).
+                        </div>
+                        <div class="invalid-feedback">
+                            Укажите целое число от {{ min_concurrent }}
+                            до {{ max_concurrent_limit }}.
+                        </div>
+                    </div>
+                    <div class="d-flex gap-2 align-items-center flex-wrap">
+                        <button type="submit" class="btn btn-primary" id="saveSettingsBtn">
+                            <i class="bi bi-check-lg"></i> Сохранить
+                        </button>
+                        <span class="text-muted small" id="settingsStatus"></span>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    const form = document.getElementById('appSettingsForm');
+    const input = document.getElementById('maxConcurrentEncodes');
+    const statusEl = document.getElementById('settingsStatus');
+    const saveBtn = document.getElementById('saveSettingsBtn');
+    const minVal = {{ min_concurrent }};
+    const maxVal = {{ max_concurrent_limit }};
+
+    function setStatus(text, isError) {
+        statusEl.textContent = text || '';
+        statusEl.classList.toggle('text-danger', !!isError);
+        statusEl.classList.toggle('text-success', !isError && !!text);
+        statusEl.classList.toggle('text-muted', !text);
+    }
+
+    async function loadSettings() {
+        try {
+            const response = await fetch('/api/settings');
+            if (!response.ok) {
+                return;
+            }
+            const data = await response.json();
+            if (data.max_concurrent_encodes != null) {
+                input.value = data.max_concurrent_encodes;
+            }
+        } catch (err) {
+            console.warn('Не удалось загрузить настройки', err);
+        }
+    }
+
+    form.addEventListener('submit', async function (event) {
+        event.preventDefault();
+        const value = parseInt(input.value, 10);
+        if (Number.isNaN(value) || value < minVal || value > maxVal) {
+            input.classList.add('is-invalid');
+            setStatus('Некорректное значение', true);
+            return;
+        }
+        input.classList.remove('is-invalid');
+        saveBtn.disabled = true;
+        setStatus('Сохранение…', false);
+
+        try {
+            const response = await fetch('/api/settings', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ max_concurrent_encodes: value }),
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                setStatus(data.error || 'Ошибка сохранения', true);
+                if (typeof showAlert === 'function') {
+                    showAlert('danger', data.error || 'Ошибка сохранения настроек');
+                }
+                return;
+            }
+            input.value = data.max_concurrent_encodes;
+            setStatus('Сохранено', false);
+            if (typeof showAlert === 'function') {
+                showAlert(
+                    'success',
+                    'Лимит параллельности: ' + data.max_concurrent_encodes
+                );
+            }
+        } catch (err) {
+            setStatus('Сеть / сервер недоступны', true);
+            if (typeof showAlert === 'function') {
+                showAlert('danger', 'Не удалось сохранить настройки');
+            }
+        } finally {
+            saveBtn.disabled = false;
+        }
+    });
+
+    loadSettings();
+})();
+</script>
+{% endblock %}

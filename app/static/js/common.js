@@ -249,6 +249,141 @@ function getStatusText(status) {
 // Глобальное хранилище пресетов
 window.presetsCache = {};
 
+// Выбранные задания (сохраняются при перерисовке карточек/строк)
+window.selectedJobIds = window.selectedJobIds || new Set();
+
+function isJobSelected(jobId) {
+    return window.selectedJobIds.has(jobId);
+}
+
+function setJobSelected(jobId, selected) {
+    if (selected) {
+        window.selectedJobIds.add(jobId);
+    } else {
+        window.selectedJobIds.delete(jobId);
+    }
+}
+
+function getVisibleJobIds() {
+    const ids = [];
+    document.querySelectorAll('.job-card[data-job-id], tr[data-job-id]').forEach((el) => {
+        const jobId = el.getAttribute('data-job-id');
+        if (jobId && !ids.includes(jobId)) {
+            ids.push(jobId);
+        }
+    });
+    return ids;
+}
+
+function updateJobsSelectionUI() {
+    const visibleIds = getVisibleJobIds();
+    // Убираем из выбора задания, которых уже нет в DOM
+    Array.from(window.selectedJobIds).forEach((jobId) => {
+        if (!visibleIds.includes(jobId)) {
+            window.selectedJobIds.delete(jobId);
+        }
+    });
+
+    const selectedCount = window.selectedJobIds.size;
+    const countEl = document.getElementById('selectedJobsCount');
+    if (countEl) {
+        countEl.textContent = `выбрано: ${selectedCount}`;
+    }
+
+    const downloadBtn = document.getElementById('downloadSelectedJobsBtn');
+    const deleteBtn = document.getElementById('deleteSelectedJobsBtn');
+    if (downloadBtn) {
+        downloadBtn.disabled = selectedCount < 1;
+    }
+    if (deleteBtn) {
+        deleteBtn.disabled = selectedCount < 1;
+    }
+
+    const selectAll = document.getElementById('selectAllJobs');
+    if (selectAll) {
+        const allSelected =
+            visibleIds.length > 0 &&
+            visibleIds.every((id) => window.selectedJobIds.has(id));
+        const someSelected = visibleIds.some((id) => window.selectedJobIds.has(id));
+        selectAll.checked = allSelected;
+        selectAll.indeterminate = someSelected && !allSelected;
+        selectAll.disabled = visibleIds.length === 0;
+    }
+}
+
+function toggleSelectAllJobs(checked) {
+    getVisibleJobIds().forEach((jobId) => {
+        setJobSelected(jobId, checked);
+        document
+            .querySelectorAll(`.job-select-checkbox[data-job-id="${jobId}"]`)
+            .forEach((cb) => {
+                cb.checked = checked;
+            });
+    });
+    updateJobsSelectionUI();
+}
+
+function onJobCheckboxChange(checkbox) {
+    const jobId = checkbox.getAttribute('data-job-id');
+    if (!jobId) {
+        return;
+    }
+    setJobSelected(jobId, checkbox.checked);
+    document
+        .querySelectorAll(`.job-select-checkbox[data-job-id="${jobId}"]`)
+        .forEach((cb) => {
+            if (cb !== checkbox) {
+                cb.checked = checkbox.checked;
+            }
+        });
+    updateJobsSelectionUI();
+}
+
+function jobCheckboxHtml(jobId) {
+    const checked = isJobSelected(jobId) ? 'checked' : '';
+    return `
+        <input type="checkbox" class="form-check-input job-select-checkbox"
+               data-job-id="${jobId}" ${checked}
+               aria-label="Выбрать задание"
+               onchange="onJobCheckboxChange(this)">
+    `;
+}
+
+function parseContentDispositionFilename(header) {
+    if (!header) {
+        return null;
+    }
+    const utf8Match = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(header);
+    if (utf8Match) {
+        try {
+            return decodeURIComponent(utf8Match[1].trim());
+        } catch (_e) {
+            return utf8Match[1].trim();
+        }
+    }
+    const plainMatch = /filename\s*=\s*"([^"]+)"/i.exec(header)
+        || /filename\s*=\s*([^;]+)/i.exec(header);
+    if (plainMatch) {
+        return plainMatch[1].trim().replace(/^["']|["']$/g, '');
+    }
+    return null;
+}
+
+function removeJobFromDom(jobId) {
+    document.querySelectorAll(`[data-job-id="${jobId}"]`).forEach((el) => {
+        if (el.classList && (el.classList.contains('job-card') || el.tagName === 'TR')) {
+            if (typeof disposeActionTooltips === 'function') {
+                disposeActionTooltips(el);
+            }
+            el.remove();
+        }
+    });
+    window.selectedJobIds.delete(jobId);
+    if (typeof removeCachedJob === 'function') {
+        removeCachedJob(jobId);
+    }
+}
+
 // Функция получения названия пресета для отображения
 function getPresetDisplayName(job) {
     if (job.preset_label) {
@@ -361,10 +496,13 @@ function createJobElement(job) {
     jobDiv.innerHTML = `
         <div class="card-body">
             <div class="d-flex justify-content-between align-items-start">
-                <div class="flex-grow-1 me-2" style="min-width: 0;">
-                    <h6 class="card-title text-truncate" title="${escapeHtml(job.filename)}">${escapeHtml(job.filename)}</h6>
-                    <span class="badge ${statusClass}">${statusText}</span>
-                    ${job.error_message ? `<div class="text-danger small mt-1">${escapeHtml(job.error_message)}</div>` : ''}
+                <div class="d-flex align-items-start flex-grow-1 me-2" style="min-width: 0;">
+                    ${jobCheckboxHtml(job.id)}
+                    <div class="flex-grow-1" style="min-width: 0;">
+                        <h6 class="card-title text-truncate" title="${escapeHtml(job.filename)}">${escapeHtml(job.filename)}</h6>
+                        <span class="badge ${statusClass}">${statusText}</span>
+                        ${job.error_message ? `<div class="text-danger small mt-1">${escapeHtml(job.error_message)}</div>` : ''}
+                    </div>
                 </div>
                 <div class="flex-shrink-0 d-flex gap-1">
                     ${actionsHtml}
@@ -436,10 +574,11 @@ function createJobRow(job) {
     const row = document.createElement('tr');
     row.setAttribute('data-job-id', job.id);
     row.innerHTML = `
+        <td>${jobCheckboxHtml(job.id)}</td>
         <td><code>${job.id.substring(0, 8)}...</code></td>
         <td>${escapeHtml(job.filename)}</td>
         <td><span class="badge ${statusClass}">${statusText}</span></td>
-        <td>${progressHtml}</td>
+        <td class="job-progress-cell">${progressHtml}</td>
         <td>${createdDate}</td>
         <td>${actionsHtml}</td>
     `;
@@ -451,6 +590,160 @@ function createJobRow(job) {
 // Действия с заданиями
 function downloadJob(jobId) {
     window.open(`/api/jobs/${jobId}/download`, '_blank');
+}
+
+async function downloadSelectedJobs() {
+    const selectedIds = Array.from(window.selectedJobIds);
+    if (selectedIds.length === 0) {
+        return;
+    }
+
+    const skipped = [];
+    const downloadIds = [];
+    selectedIds.forEach((jobId) => {
+        const job = window.jobsCache && window.jobsCache[jobId];
+        if (job && job.status === 'done') {
+            downloadIds.push(jobId);
+        } else {
+            skipped.push(jobId);
+        }
+    });
+
+    if (skipped.length > 0) {
+        showAlert(
+            'warning',
+            `Пропущено ${skipped.length} заданий (не готовы к скачиванию)`
+        );
+    }
+    if (downloadIds.length === 0) {
+        showAlert('warning', 'Нет готовых заданий среди выбранных');
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/jobs/download', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ job_ids: downloadIds }),
+        });
+
+        if (response.status === 409) {
+            const err = await response.json();
+            const missing = (err.missing || [])
+                .map((item) => item.filename || item.path || item.job_id)
+                .join(', ');
+            showAlert(
+                'danger',
+                `${err.error || 'Файлы отсутствуют на диске'}: ${missing}`
+            );
+            return;
+        }
+
+        if (!response.ok) {
+            let message = 'Ошибка пакетного скачивания';
+            try {
+                const err = await response.json();
+                if (err.error) {
+                    message = err.error;
+                }
+            } catch (_e) {
+                // ignore
+            }
+            showAlert('danger', message);
+            return;
+        }
+
+        const blob = await response.blob();
+        const filename =
+            parseContentDispositionFilename(
+                response.headers.get('Content-Disposition')
+            ) || 'kensetsu-batch.zip';
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+        showAlert('success', `Скачан архив ${filename}`);
+    } catch (error) {
+        console.error('Ошибка пакетного скачивания:', error);
+        showAlert('danger', 'Ошибка пакетного скачивания');
+    }
+}
+
+async function deleteSelectedJobs() {
+    const selectedIds = Array.from(window.selectedJobIds);
+    if (selectedIds.length === 0) {
+        return;
+    }
+
+    const confirmed = await showConfirm({
+        title: 'Удаление заданий',
+        message: `Удалить ${selectedIds.length} заданий? Выполняющиеся будут остановлены.`,
+        confirmText: 'Удалить',
+        confirmClass: 'btn-danger',
+    });
+    if (!confirmed) {
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/jobs/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ job_ids: selectedIds }),
+        });
+        const result = await response.json();
+        if (!response.ok && response.status !== 207) {
+            throw new Error(result.error || 'Ошибка сервера');
+        }
+
+        (result.deleted || []).forEach((jobId) => {
+            removeJobFromDom(jobId);
+        });
+
+        const jobsContainer = document.getElementById('jobsContainer');
+        if (jobsContainer && !jobsContainer.querySelector('.job-card')) {
+            jobsContainer.innerHTML = `
+                <div class="text-center text-muted">
+                    <i class="bi bi-inbox"></i><br>
+                    Нет активных заданий
+                </div>
+            `;
+        }
+        const jobsTableBody = document.getElementById('jobsTableBody');
+        if (jobsTableBody && !jobsTableBody.querySelector('tr[data-job-id]')) {
+            jobsTableBody.innerHTML = `
+                <tr>
+                    <td colspan="7" class="text-center text-muted">
+                        <i class="bi bi-inbox"></i><br>
+                        Нет заданий
+                    </td>
+                </tr>
+            `;
+        }
+
+        if (typeof window.refreshJobLogOptions === 'function') {
+            window.refreshJobLogOptions();
+        }
+        updateJobsSelectionUI();
+
+        const deletedCount = (result.deleted || []).length;
+        const errorCount = (result.errors || []).length;
+        if (errorCount > 0) {
+            showAlert(
+                'warning',
+                `Удалено ${deletedCount}, ошибок: ${errorCount}`
+            );
+        } else {
+            showAlert('success', `Удалено заданий: ${deletedCount}`);
+        }
+    } catch (error) {
+        console.error('Ошибка пакетного удаления:', error);
+        showAlert('danger', 'Ошибка пакетного удаления');
+    }
 }
 
 async function deleteJob(jobId) {
@@ -471,17 +764,31 @@ async function deleteJob(jobId) {
         }
         const result = await response.json();
 
-        const jobElement = document.querySelector(`[data-job-id="${jobId}"]`);
-        if (jobElement) {
-            disposeActionTooltips(jobElement);
-            jobElement.remove();
+        removeJobFromDom(jobId);
+        const jobsContainer = document.getElementById('jobsContainer');
+        if (jobsContainer && !jobsContainer.querySelector('.job-card')) {
+            jobsContainer.innerHTML = `
+                <div class="text-center text-muted">
+                    <i class="bi bi-inbox"></i><br>
+                    Нет активных заданий
+                </div>
+            `;
         }
-        if (typeof removeCachedJob === 'function') {
-            removeCachedJob(jobId);
+        const jobsTableBody = document.getElementById('jobsTableBody');
+        if (jobsTableBody && !jobsTableBody.querySelector('tr[data-job-id]')) {
+            jobsTableBody.innerHTML = `
+                <tr>
+                    <td colspan="7" class="text-center text-muted">
+                        <i class="bi bi-inbox"></i><br>
+                        Нет заданий
+                    </td>
+                </tr>
+            `;
         }
         if (typeof window.refreshJobLogOptions === 'function') {
             window.refreshJobLogOptions();
         }
+        updateJobsSelectionUI();
         const stop = result.stop || {};
         if (stop.had_process && !stop.process_dead) {
             showAlert('warning', 'Задание удалено, но процесс FFmpeg мог не завершиться');
@@ -524,3 +831,26 @@ async function stopJob(jobId) {
         showAlert('danger', 'Ошибка остановки задания');
     }
 }
+
+document.addEventListener('DOMContentLoaded', () => {
+    const selectAll = document.getElementById('selectAllJobs');
+    if (selectAll) {
+        selectAll.addEventListener('change', () => {
+            toggleSelectAllJobs(selectAll.checked);
+        });
+    }
+    const downloadBtn = document.getElementById('downloadSelectedJobsBtn');
+    if (downloadBtn) {
+        downloadBtn.addEventListener('click', () => {
+            downloadSelectedJobs();
+        });
+    }
+    const deleteBtn = document.getElementById('deleteSelectedJobsBtn');
+    if (deleteBtn) {
+        deleteBtn.addEventListener('click', () => {
+            deleteSelectedJobs();
+        });
+    }
+    updateJobsSelectionUI();
+});
+

@@ -25,6 +25,7 @@ services:
       - FFMPEG_DIR=/app/ffmpeg
       # Опционально, если mkvmerge не в PATH: MKVMERGE_BIN=/usr/bin/mkvmerge
       - FFMPEG_THREAD_QUEUE_SIZE=1024
+      - MAX_CONCURRENT_ENCODES=1
       - LOG_LEVEL=WARNING
       - CONSOLE_LOG_LEVEL=WARNING
       - MEMORY_LOG_LEVEL=INFO

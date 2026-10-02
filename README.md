@@ -185,8 +185,18 @@ python -m app.main
 - `POST /api/upload` - Загрузка файла или пачки (`file` / `files` + `video_id` + `audio_id` + `audio_downmix`)
 - `POST /api/internal/encode` - Кодирование с хранилища (`path` / `paths` + те же поля)
 - `GET /api/jobs/<job_id>/download` - Скачивание результата
+- `POST /api/jobs/download` - Пакетное скачивание готовых в ZIP (`ZIP_STORED`, имя `kensetsu-{blake2b8}.zip`)
 - `DELETE /api/jobs/<job_id>/delete` - Удаление задания
+- `POST /api/jobs/delete` - Пакетное удаление заданий
 - `POST /api/jobs/<job_id>/stop` - Остановка задания
+
+Параллельное кодирование: на странице **Настройки** (`/settings`) или через `GET`/`PUT /api/settings` (`max_concurrent_encodes`, 1–16, по умолчанию **1**). Env `MAX_CONCURRENT_ENCODES` — только fallback, пока значение не сохранено в `settings/app_settings.json`. Изменение применяется без рестарта к следующим слотам. Два полных x265 могут конкурировать за ядра — при необходимости снизьте `cpu_threads` / `x265_pools` в пресете.
+
+### API для настроек
+
+- `GET /api/settings` — текущий лимит параллельности и границы
+- `PUT /api/settings` — `{ "max_concurrent_encodes": N }` (1–16), применяется без рестарта
+- `GET`/`PUT /api/settings/metadata` — ник для метаданных дорожек
 
 ### API для пресетов
 

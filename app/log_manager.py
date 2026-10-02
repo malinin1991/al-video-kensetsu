@@ -8,12 +8,17 @@ from typing import Callable
 class LogManager:
     """In-memory хранилище логов: системный поток и логи по заданиям."""
 
-    def __init__(self, max_system_logs: int = 5000):
+    def __init__(
+        self,
+        max_system_logs: int = 5000,
+        max_job_logs: int = 10000,
+    ):
         self._lock = threading.Lock()
         self.max_system_logs = max_system_logs
-        # Системный поток ограничен; логи заданий хранятся полностью.
+        self.max_job_logs = max_job_logs
+        # Системный поток и per-job ограничены maxlen (RAM при длинных encode).
         self.system_logs: deque = deque(maxlen=max_system_logs)
-        self.job_logs: dict[str, list] = {}
+        self.job_logs: dict[str, deque] = {}
         self._emit_callback: Callable[[dict], None] | None = None
 
     def set_emit_callback(self, callback: Callable[[dict], None]):
@@ -75,7 +80,7 @@ class LogManager:
         entry = self._make_entry('job', job_id, message, level, logger_name)
         with self._lock:
             if job_id not in self.job_logs:
-                self.job_logs[job_id] = []
+                self.job_logs[job_id] = deque(maxlen=self.max_job_logs)
             self.job_logs[job_id].append(entry)
         if emit:
             self._emit(entry)

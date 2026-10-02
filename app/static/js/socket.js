@@ -173,7 +173,7 @@ function updateJobProgressGlobally(jobId, progress) {
     // Обновляем прогресс в таблице на странице логов
     const jobRow = document.querySelector(`tr[data-job-id="${jobId}"]`);
     if (jobRow) {
-        const progressCell = jobRow.querySelector('td:nth-child(4)');
+        const progressCell = jobRow.querySelector('td.job-progress-cell');
         if (progressCell) {
             const progressPercent = clampedProgress.toFixed(1);
             progressCell.innerHTML = `<span class="text-primary fw-bold">${progressPercent}%</span>`;
@@ -207,6 +207,9 @@ function updateJobGlobally(job) {
             const newJobElement = createJobElement(job);
             jobsContainer.appendChild(newJobElement);
         }
+        if (typeof updateJobsSelectionUI === 'function') {
+            updateJobsSelectionUI();
+        }
     }
     
     // Обновляем задание в таблице на странице логов (только если есть jobsTableBody)
@@ -230,6 +233,9 @@ function updateJobGlobally(job) {
             if (noJobsRow) {
                 noJobsRow.parentElement.remove();
             }
+        }
+        if (typeof updateJobsSelectionUI === 'function') {
+            updateJobsSelectionUI();
         }
     }
 }
@@ -287,6 +293,9 @@ function loadJobsForContainer(container) {
                     container.appendChild(jobElement);
                 });
             }
+            if (typeof updateJobsSelectionUI === 'function') {
+                updateJobsSelectionUI();
+            }
         })
         .catch(error => {
             console.error('Ошибка загрузки заданий:', error);
@@ -317,7 +326,7 @@ function loadJobsForTable(tableBody) {
             if (mergedJobs.length === 0) {
                 tableBody.innerHTML = `
                     <tr>
-                        <td colspan="6" class="text-center text-muted">
+                        <td colspan="7" class="text-center text-muted">
                             <i class="bi bi-inbox"></i><br>
                             Нет заданий
                         </td>
@@ -329,6 +338,9 @@ function loadJobsForTable(tableBody) {
                     const jobRow = createJobRow(job);
                     tableBody.appendChild(jobRow);
                 });
+            }
+            if (typeof updateJobsSelectionUI === 'function') {
+                updateJobsSelectionUI();
             }
         })
         .catch(error => {

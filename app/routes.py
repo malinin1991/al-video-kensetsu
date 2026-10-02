@@ -1,8 +1,18 @@
-from flask import Blueprint, render_template, request, jsonify, send_file
+from flask import (
+    Blueprint,
+    after_this_request,
+    render_template,
+    request,
+    jsonify,
+    send_file,
+)
 from werkzeug.utils import secure_filename
+import hashlib
 import os
 import shutil
+import tempfile
 import uuid
+import zipfile
 import re
 from app.models.job import Job, JobStatus, utc_now
 from app.models.presets import (
@@ -27,7 +37,18 @@ from app.internal_source import (
     resolve_internal_source_path,
 )
 from app.logger import logger
-from app.settings_store import get_metadata_nickname, load_settings, save_settings, has_saved_nickname
+from app.settings_store import (
+    DEFAULT_CONCURRENT_ENCODES,
+    MAX_CONCURRENT_ENCODES_LIMIT,
+    MIN_CONCURRENT_ENCODES,
+    get_max_concurrent_encodes,
+    get_metadata_nickname,
+    has_saved_max_concurrent,
+    has_saved_nickname,
+    load_settings,
+    normalize_max_concurrent_encodes,
+    save_settings,
+)
 from app.mkvmerge_remux import (
     cleanup_job_sidecars,
     get_mkvmerge_bin,
@@ -164,6 +185,67 @@ def api_save_metadata_settings():
         'metadata_nickname': saved.get('metadata_nickname') or '',
         'nickname_from_file': True,
     })
+
+
+def _app_settings_payload() -> dict:
+    """Текущие настройки приложения для API/UI."""
+    effective = get_max_concurrent_encodes()
+    worker = get_ffmpeg_worker_instance()
+    runtime = getattr(worker, 'max_concurrent', effective)
+    return {
+        'max_concurrent_encodes': effective,
+        'max_concurrent_encodes_runtime': runtime,
+        'max_concurrent_encodes_from_file': has_saved_max_concurrent(),
+        'min_concurrent_encodes': MIN_CONCURRENT_ENCODES,
+        'max_concurrent_encodes_limit': MAX_CONCURRENT_ENCODES_LIMIT,
+        'default_concurrent_encodes': DEFAULT_CONCURRENT_ENCODES,
+    }
+
+
+@main_bp.route('/api/settings', methods=['GET'])
+def api_get_app_settings():
+    """Возвращает настройки приложения (параллельность и др.)."""
+    return jsonify(_app_settings_payload())
+
+
+@main_bp.route('/api/settings', methods=['PUT', 'POST'])
+def api_save_app_settings():
+    """Сохраняет настройки приложения и применяет лимит к воркеру без рестарта."""
+    payload = request.get_json(silent=True) or {}
+    if 'max_concurrent_encodes' not in payload and 'max_concurrent_encodes' not in request.form:
+        return jsonify({'error': 'Укажите max_concurrent_encodes'}), 400
+
+    raw = payload.get('max_concurrent_encodes')
+    if raw is None:
+        raw = request.form.get('max_concurrent_encodes')
+
+    try:
+        value = normalize_max_concurrent_encodes(raw)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+    saved = save_settings({'max_concurrent_encodes': value})
+    worker = get_ffmpeg_worker_instance()
+    runtime = worker.set_max_concurrent(saved['max_concurrent_encodes'])
+    logger.main_logger.info(
+        f'Сохранён лимит параллельных кодирований: {runtime}'
+    )
+    body = _app_settings_payload()
+    body['message'] = 'Настройки сохранены'
+    body['max_concurrent_encodes_runtime'] = runtime
+    return jsonify(body)
+
+
+@main_bp.route('/settings')
+def settings_page():
+    """Страница настроек приложения."""
+    return render_template(
+        'settings.html',
+        max_concurrent_encodes=get_max_concurrent_encodes(),
+        min_concurrent=MIN_CONCURRENT_ENCODES,
+        max_concurrent_limit=MAX_CONCURRENT_ENCODES_LIMIT,
+    )
+
 
 @main_bp.route('/logs')
 def logs():
@@ -895,6 +977,197 @@ def api_internal_encode():
         logger.upload_logger.error(f"Ошибка внутреннего кодирования: {e}")
         return jsonify({'error': f'Ошибка внутреннего кодирования: {str(e)}'}), 500
 
+def _batch_archive_name(job_ids: list[str]) -> str:
+    """kensetsu-{blake2b8}.zip по отсортированным job_id через \\n."""
+    canonical = '\n'.join(sorted(job_ids))
+    hash8 = hashlib.blake2b(
+        canonical.encode('utf-8'), digest_size=4
+    ).hexdigest()
+    return f'kensetsu-{hash8}.zip'
+
+
+def _unique_zip_arcname(filename: str, job_id: str, used: set[str]) -> str:
+    """Имя внутри ZIP; при коллизии — суффикс job_id[:8]."""
+    if filename not in used:
+        used.add(filename)
+        return filename
+    name, ext = os.path.splitext(filename)
+    candidate = f'{name}_{job_id[:8]}{ext}'
+    if candidate in used:
+        candidate = f'{name}_{job_id}{ext}'
+    used.add(candidate)
+    return candidate
+
+
+@main_bp.route('/api/jobs/download', methods=['POST'])
+def download_jobs_batch():
+    """Пакетное скачивание готовых файлов в ZIP_STORED (без сжатия)."""
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify({'error': 'Некорректный JSON'}), 400
+
+    job_ids = payload.get('job_ids')
+    if not isinstance(job_ids, list) or not job_ids:
+        return jsonify({'error': 'Укажите job_ids (непустой массив)'}), 400
+    if not all(isinstance(jid, str) and jid for jid in job_ids):
+        return jsonify({'error': 'job_ids должен содержать строки'}), 400
+
+    # Кандидаты: done + output_path; отсутствующие на диске — ошибка без архива
+    candidates = []
+    missing = []
+    for job_id in job_ids:
+        job = get_job(job_id)
+        if not job or job.status != JobStatus.DONE or not job.output_path:
+            continue
+        if not os.path.exists(job.output_path):
+            missing.append({
+                'job_id': job.id,
+                'filename': job.get_output_filename(),
+                'path': job.output_path,
+            })
+            continue
+        candidates.append(job)
+
+    if missing:
+        return jsonify({
+            'error': 'Часть выходных файлов отсутствует на диске',
+            'missing': missing,
+        }), 409
+
+    if not candidates:
+        return jsonify({
+            'error': 'Нет готовых заданий со скачиваемыми файлами',
+        }), 400
+
+    archive_job_ids = [job.id for job in candidates]
+    archive_name = _batch_archive_name(archive_job_ids)
+    comment = (
+        f'kensetsu batch; {len(candidates)} files; '
+        f'job_ids: {",".join(sorted(archive_job_ids))}'
+    ).encode('utf-8')
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.zip')
+    tmp_path = tmp.name
+    tmp.close()
+    try:
+        used_names: set[str] = set()
+        with zipfile.ZipFile(
+            tmp_path, 'w', compression=zipfile.ZIP_STORED
+        ) as zf:
+            zf.comment = comment
+            for job in candidates:
+                arcname = _unique_zip_arcname(
+                    job.get_output_filename(), job.id, used_names
+                )
+                zf.write(job.output_path, arcname=arcname)
+
+        @after_this_request
+        def _cleanup_zip(response):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            return response
+
+        return send_file(
+            tmp_path,
+            as_attachment=True,
+            download_name=archive_name,
+            mimetype='application/zip',
+        )
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def delete_job_by_id(job_id: str) -> dict:
+    """
+    Удаляет одно задание: stop, файлы, storage, логи.
+    Возвращает dict с результатом; бросает KeyError если не найдено.
+    """
+    job = get_job(job_id)
+    if not job:
+        raise KeyError(job_id)
+
+    ffmpeg_worker = get_ffmpeg_worker_instance()
+    stop_result = ffmpeg_worker.stop_job(job_id)
+    logger.main_logger.info(f"Удаление задания {job_id}: {stop_result}")
+
+    if job.original_path and is_internal_source_path(job.original_path):
+        logger.main_logger.info(
+            f"Исходник не удалён (internal): {job.original_path}"
+        )
+    elif job.original_path and original_in_use_by_jobs(
+        job.original_path, get_all_jobs(), job.id
+    ):
+        logger.main_logger.info(
+            f"Исходник не удалён (используется другим заданием): {job.original_path}"
+        )
+    else:
+        cleanup_job_original(job.original_path)
+
+    if job.output_path and os.path.exists(job.output_path):
+        cleanup_file(job.output_path)
+
+    if job.output_path:
+        cleanup_job_sidecars(job.output_path, job.id)
+
+    jobs_storage = get_jobs_storage()
+    if job_id in jobs_storage:
+        del jobs_storage[job_id]
+
+    from app.log_manager import log_manager
+    log_manager.remove_job_logs(job_id)
+
+    return {
+        'job_id': job_id,
+        'message': 'Задание удалено успешно',
+        'stop': stop_result,
+    }
+
+
+@main_bp.route('/api/jobs/delete', methods=['POST'])
+def delete_jobs_batch():
+    """Пакетное удаление заданий (любой статус)."""
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify({'error': 'Некорректный JSON'}), 400
+
+    job_ids = payload.get('job_ids')
+    if not isinstance(job_ids, list) or not job_ids:
+        return jsonify({'error': 'Укажите job_ids (непустой массив)'}), 400
+    if not all(isinstance(jid, str) and jid for jid in job_ids):
+        return jsonify({'error': 'job_ids должен содержать строки'}), 400
+
+    deleted = []
+    errors = []
+    results = []
+
+    for job_id in job_ids:
+        try:
+            result = delete_job_by_id(job_id)
+            deleted.append(job_id)
+            results.append(result)
+        except KeyError:
+            errors.append({'job_id': job_id, 'error': 'Задание не найдено'})
+        except Exception as e:
+            errors.append({'job_id': job_id, 'error': str(e)})
+
+    body = {
+        'deleted': deleted,
+        'errors': errors,
+        'results': results,
+    }
+    if not deleted and errors:
+        return jsonify(body), 400
+    if deleted and errors:
+        return jsonify(body), 207
+    return jsonify(body), 200
+
+
 @main_bp.route('/api/jobs/<job_id>/download')
 def download_file(job_id):
     """API для скачивания закодированного файла"""
@@ -917,49 +1190,11 @@ def download_file(job_id):
 @main_bp.route('/api/jobs/<job_id>/delete', methods=['DELETE'])
 def delete_job(job_id):
     """API для удаления задания и файлов (очередь + остановка FFmpeg при необходимости)"""
-    job = get_job(job_id)
-    if not job:
-        return jsonify({'error': 'Задание не найдено'}), 404
-    
     try:
-        # Всегда снимаем с очереди / убиваем процесс (гонка planned→in_progress)
-        ffmpeg_worker = get_ffmpeg_worker_instance()
-        stop_result = ffmpeg_worker.stop_job(job_id)
-        logger.main_logger.info(f"Удаление задания {job_id}: {stop_result}")
-        
-        # Удаляем файлы (internal/read-only и общие исходники не трогаем)
-        if job.original_path and is_internal_source_path(job.original_path):
-            logger.main_logger.info(
-                f"Исходник не удалён (internal): {job.original_path}"
-            )
-        elif job.original_path and original_in_use_by_jobs(
-            job.original_path, get_all_jobs(), job.id
-        ):
-            logger.main_logger.info(
-                f"Исходник не удалён (используется другим заданием): {job.original_path}"
-            )
-        else:
-            cleanup_job_original(job.original_path)
-        
-        if job.output_path and os.path.exists(job.output_path):
-            cleanup_file(job.output_path)
-
-        if job.output_path:
-            cleanup_job_sidecars(job.output_path, job.id)
-        
-        # Удаляем задание из хранилища
-        jobs_storage = get_jobs_storage()
-        if job_id in jobs_storage:
-            del jobs_storage[job_id]
-
-        from app.log_manager import log_manager
-        log_manager.remove_job_logs(job_id)
-        
-        return jsonify({
-            'message': 'Задание удалено успешно',
-            'stop': stop_result,
-        })
-    
+        result = delete_job_by_id(job_id)
+        return jsonify(result)
+    except KeyError:
+        return jsonify({'error': 'Задание не найдено'}), 404
     except Exception as e:
         return jsonify({'error': f'Ошибка удаления: {str(e)}'}), 500
 

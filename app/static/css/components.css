@@ -2,10 +2,19 @@
    КОМПОНЕНТЫ И УТИЛИТЫ
    ======================================== */
 
-/* Статусы заданий */
-.status-planned { 
-    background-color: #6c757d; 
-    color: white; 
+/* Тулбар пакетных действий со списком заданий */
+.jobs-batch-toolbar {
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid #dee2e6;
+}
+
+.job-select-checkbox {
+    flex-shrink: 0;
+    margin-top: 0.2rem;
+}
+
+.job-card .job-select-checkbox {
+    margin-right: 0.5rem;
 }
 
 .status-in_progress { 

@@ -44,6 +44,38 @@ class TestSettingsStore:
         assert settings_store.get_metadata_nickname() == 'B'
         assert not os.path.exists(str(settings_file) + '.tmp')
 
+    def test_max_concurrent_default_is_one(self, settings_file, monkeypatch):
+        monkeypatch.delenv('MAX_CONCURRENT_ENCODES', raising=False)
+        assert not settings_file.exists()
+        assert settings_store.get_max_concurrent_encodes() == 1
+        assert settings_store.has_saved_max_concurrent() is False
+
+    def test_max_concurrent_env_fallback(self, settings_file, monkeypatch):
+        monkeypatch.setenv('MAX_CONCURRENT_ENCODES', '3')
+        assert settings_store.get_max_concurrent_encodes() == 3
+
+    def test_max_concurrent_saved_overrides_env(self, settings_file, monkeypatch):
+        monkeypatch.setenv('MAX_CONCURRENT_ENCODES', '4')
+        settings_store.save_settings({'max_concurrent_encodes': 2})
+        assert settings_store.has_saved_max_concurrent() is True
+        assert settings_store.get_max_concurrent_encodes() == 2
+        assert '"max_concurrent_encodes": 2' in settings_file.read_text(
+            encoding='utf-8'
+        )
+
+    def test_max_concurrent_rejects_out_of_range(self, settings_file):
+        with pytest.raises(ValueError):
+            settings_store.save_settings({'max_concurrent_encodes': 0})
+        with pytest.raises(ValueError):
+            settings_store.save_settings({'max_concurrent_encodes': 99})
+
+    def test_save_preserves_other_keys(self, settings_file):
+        settings_store.save_settings({'metadata_nickname': 'Nick'})
+        settings_store.save_settings({'max_concurrent_encodes': 2})
+        data = settings_store.load_settings()
+        assert data['metadata_nickname'] == 'Nick'
+        assert data['max_concurrent_encodes'] == 2
+
     def test_legacy_logs_migration(self, tmp_path, monkeypatch):
         """Читает ник из старого /app/logs, если нового файла ещё нет."""
         new_path = tmp_path / 'settings' / 'app_settings.json'

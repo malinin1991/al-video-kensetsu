@@ -33,6 +33,10 @@ from app.mkvmerge_remux import (
     remux_temp_path,
     write_option_file,
 )
+from app.settings_store import (
+    get_max_concurrent_encodes,
+    normalize_max_concurrent_encodes,
+)
 
 VALID_X265_TUNES = frozenset({
     'psnr', 'ssim', 'grain', 'animation',
@@ -53,27 +57,68 @@ class FFmpegWorker:
         self._cancel_requested = set()  # job_id с запросом отмены
         self._missing_total_frames_logged = set()  # job_id, для которых уже писали warning
         self._lock = threading.Lock()
+        # Из settings (файл) или env MAX_CONCURRENT_ENCODES; дефолт 1
+        self.max_concurrent = get_max_concurrent_encodes()
+        self._job_threads: dict[str, threading.Thread] = {}
         
-        # Инициализация завершена
-        
+        logger.main_logger.info(
+            f'FFmpegWorker: параллельных слотов кодирования = {self.max_concurrent}'
+        )
         self.start_worker()
+
+    def set_max_concurrent(self, value: int) -> int:
+        """
+        Обновляет лимит слотов без рестарта.
+        Уже идущие encode не убиваются; новый лимит влияет на набор следующих слотов.
+        """
+        normalized = normalize_max_concurrent_encodes(value)
+        with self._lock:
+            old = self.max_concurrent
+            self.max_concurrent = normalized
+        if old != normalized:
+            logger.main_logger.info(
+                f'FFmpegWorker: лимит параллельности {old} → {normalized} '
+                f'(применяется к следующим слотам)'
+            )
+        return normalized
     
     def start_worker(self):
-        """Запускает фоновый поток для обработки заданий"""
+        """Запускает фоновый поток-диспетчер для обработки заданий"""
         if self.worker_thread is None or not self.worker_thread.is_alive():
             self.worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
             self.worker_thread.start()
-    
+
+    def _reap_finished_job_threads(self) -> None:
+        """Убирает завершённые потоки заданий (вызывать под self._lock)."""
+        finished = [
+            job_id
+            for job_id, thread in self._job_threads.items()
+            if not thread.is_alive()
+        ]
+        for job_id in finished:
+            self._job_threads.pop(job_id, None)
+
     def _worker_loop(self):
-        """Основной цикл воркера"""
+        """Диспетчер: берёт задания из очереди, пока есть свободные слоты."""
         while not self.stop_event.is_set():
-            job = None
+            started = False
             with self._lock:
-                if self.job_queue:
+                self._reap_finished_job_threads()
+                while (
+                    self.job_queue
+                    and len(self._job_threads) < self.max_concurrent
+                ):
                     job = self.job_queue.pop(0)
-            if job:
-                self._process_job(job)
-            else:
+                    thread = threading.Thread(
+                        target=self._process_job,
+                        args=(job,),
+                        daemon=True,
+                        name=f'ffmpeg-job-{job.id[:8]}',
+                    )
+                    self._job_threads[job.id] = thread
+                    thread.start()
+                    started = True
+            if not started:
                 time.sleep(0.25)
     
     def add_job(self, job: Job):
@@ -738,100 +783,113 @@ class FFmpegWorker:
                     self.log_callback(job.id, f"Ошибка выполнения: {str(e)}")
     
     def _parse_progress(self, line: str, job_id: str) -> float | None:
-        """Парсит прогресс из строки вывода FFmpeg"""
+        """Парсит прогресс из строки вывода FFmpeg (thread-safe для running_jobs)."""
         try:
-            # Логируем все строки FFmpeg для отладки
             logger.main_logger.debug(f"FFmpeg строка для {job_id}: {line}")
-            
-            # Парсим NUMBER_OF_FRAMES из вывода FFmpeg
-            # Формат: [11:13:19] [885b3bae-5e5b-4011-81ee-cafc455375a3] NUMBER_OF_FRAMES-eng: 70317
-            # Может быть несколько дорожек, берем только от первой видео-дорожки
+
             if 'NUMBER_OF_FRAMES' in line:
                 frames_match = re.search(r'NUMBER_OF_FRAMES[^:]*:\s*(\d+)', line)
-                if frames_match and job_id in self.running_jobs:
+                if frames_match:
                     total_frames = int(frames_match.group(1))
-                    job = self.running_jobs[job_id]
-                    
-                    # Проверяем, что это первая видео-дорожка
-                    # Если total_frames уже установлен, не перезаписываем (берем только первое значение)
-                    if not job.total_frames or job.total_frames == 0:
-                        job.total_frames = total_frames
-                        logger.main_logger.info(f"Установлено общее количество кадров для {job_id} (первая видео-дорожка): {total_frames}")
+                    with self._lock:
+                        job = self.running_jobs.get(job_id)
+                        if job is None:
+                            return None
+                        if not job.total_frames or job.total_frames == 0:
+                            job.total_frames = total_frames
+                            set_total = True
+                        else:
+                            set_total = False
+                            existing = job.total_frames
+                    if set_total:
+                        logger.main_logger.debug(
+                            f"Установлено общее количество кадров для {job_id}: {total_frames}"
+                        )
                         if self.log_callback:
-                            self.log_callback(job_id, f"📊 Общее количество кадров: {total_frames}")
+                            self.log_callback(
+                                job_id, f"📊 Общее количество кадров: {total_frames}"
+                            )
                     else:
-                        logger.main_logger.debug(f"Пропускаем NUMBER_OF_FRAMES для {job_id}: уже установлено {job.total_frames} (возможно, это аудио-дорожка)")
-                    return None  # Не возвращаем прогресс, только устанавливаем total_frames
-            
-            # Ищем строку с прогрессом (например: "frame= 1234 fps=25 q=28.0 size= 1024kB time=00:00:49.36 bitrate= 169.7kbits/s")
-            # Также обрабатываем строки с time=N/A
+                        logger.main_logger.debug(
+                            f"Пропускаем NUMBER_OF_FRAMES для {job_id}: "
+                            f"уже установлено {existing}"
+                        )
+                    return None
+
             if 'frame=' in line and ('fps=' in line or 'time=' in line):
-                # Извлекаем номер кадра
                 frame_match = re.search(r'frame=\s*(\d+)', line)
                 if frame_match:
                     current_frame = int(frame_match.group(1))
-                    logger.main_logger.info(f"Найден кадр для {job_id}: {current_frame}")
-                    
-                    # Получаем задание по ID
-                    if job_id in self.running_jobs:
-                        job = self.running_jobs[job_id]
-                        logger.main_logger.info(f"Задание {job_id}: total_frames={getattr(job, 'total_frames', 'None')}")
-                        
-                        if hasattr(job, 'total_frames') and job.total_frames and job.total_frames > 0:
-                            progress = min((current_frame / job.total_frames) * 100, 100.0)
-                            logger.main_logger.info(f"Прогресс {job_id}: {current_frame}/{job.total_frames} = {progress:.1f}%")
-                            return progress
+                    logger.main_logger.debug(
+                        f"Найден кадр для {job_id}: {current_frame}"
+                    )
+
+                    with self._lock:
+                        job = self.running_jobs.get(job_id)
+                        total_frames = (
+                            job.total_frames
+                            if job is not None and job.total_frames
+                            else None
+                        )
+                        missing_logged = job_id in self._missing_total_frames_logged
+                        if (
+                            job is not None
+                            and (not total_frames or total_frames <= 0)
+                            and not missing_logged
+                        ):
+                            self._missing_total_frames_logged.add(job_id)
+                            should_warn_missing = True
                         else:
-                            if job_id not in self._missing_total_frames_logged:
-                                self._missing_total_frames_logged.add(job_id)
-                                logger.main_logger.warning(
-                                    f"У задания {job_id} нет total_frames или оно равно 0"
-                                )
-                            
-                            # Если нет total_frames, используем приблизительный расчет по времени
-                            time_match = re.search(r'time=(\d+):(\d+):(\d+\.?\d*)', line)
-                            if time_match:
-                                hours = int(time_match.group(1))
-                                minutes = int(time_match.group(2))
-                                seconds = float(time_match.group(3))
-                                current_time = hours * 3600 + minutes * 60 + seconds
-                                
-                                # Приблизительная оценка на основе времени (не очень точная)
-                                # Предполагаем, что видео длится около 2 часов максимум
-                                estimated_duration = 7200  # 2 часа в секундах
-                                progress = min((current_time / estimated_duration) * 100, 100.0)
-                                logger.main_logger.info(f"Приблизительный прогресс по времени для {job_id}: {progress:.1f}%")
-                                return progress
-                    
-                    # Если не нашли задание с total_frames, используем приблизительный расчет
-                    # FFmpeg обычно показывает прогресс в виде time=00:01:23.45
-                    time_match = re.search(r'time=(\d+):(\d+):(\d+\.?\d*)', line)
+                            should_warn_missing = False
+
+                    if job is not None and total_frames and total_frames > 0:
+                        progress = min(
+                            (current_frame / total_frames) * 100, 100.0
+                        )
+                        logger.main_logger.debug(
+                            f"Прогресс {job_id}: {current_frame}/{total_frames} "
+                            f"= {progress:.1f}%"
+                        )
+                        return progress
+
+                    if should_warn_missing:
+                        logger.main_logger.warning(
+                            f"У задания {job_id} нет total_frames или оно равно 0"
+                        )
+
+                    time_match = re.search(
+                        r'time=(\d+):(\d+):(\d+\.?\d*)', line
+                    )
                     if time_match:
                         hours = int(time_match.group(1))
                         minutes = int(time_match.group(2))
                         seconds = float(time_match.group(3))
                         current_time = hours * 3600 + minutes * 60 + seconds
-                        
-                        # Приблизительная оценка на основе времени (не очень точная)
-                        # Предполагаем, что видео длится около 2 часов максимум
-                        estimated_duration = 7200  # 2 часа в секундах
-                        progress = min((current_time / estimated_duration) * 100, 100.0)
-                        logger.main_logger.info(f"Приблизительный прогресс по времени для {job_id}: {progress:.1f}%")
+                        estimated_duration = 7200
+                        progress = min(
+                            (current_time / estimated_duration) * 100, 100.0
+                        )
+                        logger.main_logger.debug(
+                            f"Приблизительный прогресс по времени для {job_id}: "
+                            f"{progress:.1f}%"
+                        )
                         return progress
-                    elif 'time=N/A' in line:
-                        # Если time=N/A, используем только номер кадра для приблизительной оценки
-                        # Предполагаем, что видео имеет около 30 FPS и длится 2 часа максимум
+                    if 'time=N/A' in line:
                         estimated_fps = 30
-                        estimated_duration = 7200  # 2 часа в секундах
+                        estimated_duration = 7200
                         estimated_total_frames = estimated_fps * estimated_duration
-                        
-                        progress = min((current_frame / estimated_total_frames) * 100, 100.0)
-                        logger.main_logger.info(f"Приблизительный прогресс по кадрам для {job_id}: {current_frame}/{estimated_total_frames} = {progress:.1f}%")
+                        progress = min(
+                            (current_frame / estimated_total_frames) * 100, 100.0
+                        )
+                        logger.main_logger.debug(
+                            f"Приблизительный прогресс по кадрам для {job_id}: "
+                            f"{current_frame}/{estimated_total_frames} = {progress:.1f}%"
+                        )
                         return progress
-                        
+
         except Exception as e:
             logger.main_logger.debug(f"Ошибка парсинга прогресса для {job_id}: {e}")
-        
+
         return None
     
     def get_job_status(self, job_id: str) -> Job | None:
@@ -889,15 +947,20 @@ class FFmpegWorker:
         }
     
     def stop_worker(self):
-        """Останавливает воркер"""
+        """Останавливает воркер и активные потоки кодирования"""
         self.stop_event.set()
         
         with self._lock:
             processes = list(self.processes.items())
             self.processes.clear()
+            job_threads = list(self._job_threads.values())
 
         for job_id, process in processes:
             self._kill_process(process, job_id)
+
+        for thread in job_threads:
+            if thread.is_alive():
+                thread.join(timeout=5)
         
         if self.worker_thread and self.worker_thread.is_alive():
             self.worker_thread.join(timeout=5)

@@ -3,6 +3,11 @@
 ## [0.9.3] - TBD
 
 ### Добавлено
+- ⚙️ **Страница настроек** — `/settings` + `GET`/`PUT /api/settings`; лимит параллельных encode сохраняется в `settings/app_settings.json` и применяется без рестарта
+- ⚡ **Параллельное кодирование** — до N заданий одновременно; дефолт **1** (env `MAX_CONCURRENT_ENCODES` — fallback)
+- ☑️ **Выбор заданий в UI** — чекбоксы, «Выбрать все», пакетные «Скачать выбранные» / «Удалить выбранные»
+- 📦 **Пакетное скачивание** — `POST /api/jobs/download` → ZIP без сжатия (`ZIP_STORED`), имя `kensetsu-{blake2b8}.zip`, comment с job_ids; при отсутствии файлов на диске — 409 + `missing[]` (архив не создаётся)
+- 🗑️ **Пакетное удаление** — `POST /api/jobs/delete` + рефактор `delete_job_by_id`
 - 📦 **Официальный APT MKVToolNix** — `mkvtoolnix` в Docker из mkvtoolnix.download (не из Debian)
 - 🎛️ **Группы пресетов rip/remux** — BD-пресеты (`bd_*`), AAC 192k, FDK-пресеты; удалены anime/fast/high_quality
 - 🔍 **Детект libfdk_aac** — флаг `available` у пресетов и `libfdk_aac` в system-info; 400 при недоступном FDK

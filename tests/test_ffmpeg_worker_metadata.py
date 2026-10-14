@@ -359,6 +359,51 @@ class _FakeEncodeProc:
         return self.returncode
 
 
+def test_job_availability_waits_for_final_remux_and_survives_restore(worker, tmp_path):
+    from app.main import app, status_callback
+    from app.job_store import get_job_store
+    import app.routes as routes
+
+    job = _job(update_metadata='true')
+    job.output_path = str(tmp_path / 'final.mkv')
+    encode = tmp_path / 'final.partial.mkv'
+    encode.write_bytes(b'encoded')
+    store = get_job_store()
+    store.insert_job(job)
+    routes.jobs_storage[job.id] = job
+    worker.status_callback = status_callback
+
+    try:
+        with app.test_client() as client:
+            url = f'/api/jobs/{job.id}'
+            assert client.get(url).get_json()['status'] == 'planned'
+            job.status = JobStatus.IN_PROGRESS
+            job.progress = 100.0
+            status_callback(job.id, job.status, None)
+
+            def finalize(_job, _path):
+                data = client.get(url).get_json()
+                assert data['status'] == 'in_progress'
+                assert data['progress'] == 100.0
+                assert data['output_available'] is False
+                assert client.head(url + '/download').status_code == 400
+                encode.replace(job.output_path)
+
+            with patch('app.ffmpeg_worker.subprocess.Popen', return_value=_FakeEncodeProc()), patch.object(
+                worker, '_finalize_encoded_output', side_effect=finalize
+            ):
+                worker._run_ffmpeg(job, ['ffmpeg', '-y', str(encode)], str(encode))
+
+            data = client.get(url).get_json()
+            assert data['status'] == 'done'
+            assert data['output_available'] is True
+            assert data['output_size_bytes'] == len(b'encoded')
+            assert client.head(data['download_url']).status_code == 200
+            restored = store.recover()[0]
+            assert restored.to_dict() == data
+    finally:
+        routes.jobs_storage.pop(job.id, None)
+
 def test_cancel_after_successful_finalize_marks_done(worker, tmp_path):
     """Отмена после успешного remux/replace не должна прятать готовый файл."""
     output = tmp_path / 'out.mkv'

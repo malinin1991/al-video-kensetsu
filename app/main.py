@@ -122,6 +122,8 @@ def status_callback(job_id, status, error_message):
         job.status = status
         if error_message:
             job.error_message = error_message
+        from app.job_store import get_job_store
+        get_job_store().save_job(job)
         socketio.emit('job_update', job.to_dict())
 
 ffmpeg_worker = FFmpegWorker(progress_callback, log_callback, status_callback)
@@ -135,8 +137,9 @@ log_manager.set_emit_callback(_emit_log_update)
 app.register_blueprint(main_bp)
 
 # Устанавливаем воркер в routes
-from app.routes import set_ffmpeg_worker
+from app.routes import restore_jobs, set_ffmpeg_worker
 set_ffmpeg_worker(ffmpeg_worker)
+restore_jobs()
 
 @app.route('/health')
 def health_check():

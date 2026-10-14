@@ -8,6 +8,7 @@ from flask import (
 )
 from werkzeug.utils import secure_filename
 import hashlib
+import json
 import os
 import shutil
 import tempfile
@@ -15,6 +16,7 @@ import uuid
 import zipfile
 import re
 from app.models.job import Job, JobStatus, utc_now
+from app.job_store import get_job_store
 from app.models.presets import (
     DEFAULT_AUDIO_ID,
     DEFAULT_VIDEO_ID,
@@ -117,9 +119,16 @@ def add_job(job: Job):
     # Логируем создание задания
     logger.log_job_created(job.id, job.filename, job.status.value)
     
+    store = get_job_store()
+    store.insert_job(job)
     jobs_storage[job.id] = job
-    ffmpeg_worker = get_ffmpeg_worker_instance()
-    ffmpeg_worker.add_job(job)
+    try:
+        ffmpeg_worker = get_ffmpeg_worker_instance()
+        ffmpeg_worker.add_job(job)
+    except Exception:
+        jobs_storage.pop(job.id, None)
+        store.delete_job(job.id, discard_request_link=True)
+        raise
 
     # Сразу уведомляем UI (до старта кодирования status_callback ещё не вызывается)
     _emit_job_update(job)
@@ -144,6 +153,12 @@ def update_job_status(job_id: str, status: JobStatus, error_message: str = None)
         jobs_storage[job_id].status = status
         if error_message:
             jobs_storage[job_id].error_message = error_message
+        get_job_store().save_job(jobs_storage[job_id])
+
+
+def restore_jobs():
+    """Восстанавливает историю без автоматического запуска прерванных заданий."""
+    jobs_storage.update({job.id: job for job in get_job_store().recover()})
 
 @main_bp.route('/')
 def index():
@@ -646,6 +661,9 @@ def create_job_from_saved_file(
     video_id=DEFAULT_VIDEO_ID,
     audio_id=DEFAULT_AUDIO_ID,
     audio_downmix='none',
+    *,
+    input_path=None,
+    request_id=None,
 ):
     """Создаёт задание из уже сохранённого файла.
 
@@ -674,10 +692,12 @@ def create_job_from_saved_file(
             filename=filename,
             original_path=bound_path,
             file_hash=file_hash,
-            ffmpeg_params=ffmpeg_params,
+            ffmpeg_params=dict(ffmpeg_params),
             video_id=video_id,
             audio_id=audio_id,
             audio_downmix=audio_downmix,
+            input_path=input_path,
+            request_id=request_id,
         )
 
         added_job = add_job(job)
@@ -847,25 +867,22 @@ def _collect_internal_paths(is_json, payload, request):
 
 
 def _encode_internal_single(
-    path, ffmpeg_params, video_id, audio_id, audio_downmix
+    path, ffmpeg_params, video_id, audio_id, audio_downmix, request_id=None
 ):
     """Копирует один internal-путь и создаёт задание. Возвращает Flask response."""
     dest_path = None
     try:
         resolved = resolve_internal_source_path(path)
         dest_path, original_name = copy_internal_source_to_uploads(resolved)
-        result = process_single_video_file(
+        job_obj, job_err = create_job_from_saved_file(
             dest_path, original_name, ffmpeg_params, video_id,
             audio_id, audio_downmix,
+            input_path=str(path), request_id=request_id,
         )
-        response, status_code = _unwrap_flask_result(result)
-        if status_code >= 400:
+        if job_err:
             cleanup_file(dest_path)
-            return result
+            return jsonify({'error': job_err}), 500
 
-        data = response.get_json() or {}
-        job_data = data.get('job') or {}
-        job_obj = get_job(job_data.get('id')) if job_data.get('id') else None
         encoding_started = bool(
             job_obj and job_obj.status == JobStatus.IN_PROGRESS
         )
@@ -874,7 +891,7 @@ def _encode_internal_single(
             'queued': True,
             'encoding_started': encoding_started,
             'message': 'Задание создано и добавлено в очередь',
-            'job': job_obj.to_dict() if job_obj else job_data,
+            'job': job_obj.to_dict(),
         })
     except InternalSourceError as exc:
         if dest_path:
@@ -887,7 +904,7 @@ def _encode_internal_single(
 
 
 def _encode_internal_batch(
-    paths, ffmpeg_params, video_id, audio_id, audio_downmix
+    paths, ffmpeg_params, video_id, audio_id, audio_downmix, request_id=None
 ):
     """Batch internal encode: один video/audio/downmix на все paths."""
     jobs = []
@@ -903,6 +920,7 @@ def _encode_internal_batch(
             job, job_err = create_job_from_saved_file(
                 dest_path, original_name, ffmpeg_params, video_id,
                 audio_id, audio_downmix,
+                input_path=str(path), request_id=request_id,
             )
             if job_err:
                 cleanup_file(dest_path)
@@ -931,6 +949,7 @@ def _encode_internal_batch(
 @main_bp.route('/api/internal/encode', methods=['POST'])
 def api_internal_encode():
     """Кодирование файла(ов) с примонтированного хранилища (JSON и form)."""
+    claimed_id = None
     try:
         if get_internal_source_roots() is None:
             return jsonify({'error': 'Внутренний режим кодирования отключён'}), 403
@@ -941,6 +960,80 @@ def api_internal_encode():
             payload = request.get_json(silent=True) or {}
             if not isinstance(payload, dict):
                 return jsonify({'error': 'Некорректный JSON'}), 400
+
+        raw_id = payload.get('request_id') if is_json else request.form.get('request_id')
+        if not is_json and len(request.form.getlist('request_id')) > 1:
+            return jsonify({'error': 'Укажите один request_id'}), 400
+        if raw_id is not None and (
+            not isinstance(raw_id, str) or not re.fullmatch(r'[A-Za-z0-9._-]{1,128}', raw_id)
+        ):
+            return jsonify({'error': 'request_id: 1–128 символов A–Z, a–z, 0–9, ., _, -'}), 400
+
+        if raw_id is not None:
+            # Сравниваем переданные параметры до resolve: изменение defaults не меняет повтор.
+            submitted = dict(payload) if is_json else request.form.to_dict(flat=False)
+            submitted.pop('request_id', None)
+            fingerprint = hashlib.sha256(json.dumps(
+                {'format': 'json' if is_json else 'form', 'payload': submitted},
+                ensure_ascii=False, sort_keys=True, separators=(',', ':'),
+            ).encode('utf-8')).hexdigest()
+            store = get_job_store()
+            claimed, receipt = store.claim_request(raw_id, fingerprint)
+            if receipt['fingerprint'] != fingerprint:
+                return jsonify({'error': 'request_id уже использован с другими параметрами', 'request_id': raw_id}), 409
+            if not claimed:
+                return _internal_receipt_response(receipt)
+            claimed_id = raw_id
+
+        result = _execute_internal_encode(is_json, payload, raw_id)
+        if claimed_id is None:
+            return result
+        response, status_code = _unwrap_flask_result(result)
+        body = response.get_json()
+        body.update(request_id=claimed_id, receipt_url=_receipt_url(claimed_id))
+        store.finish_request(claimed_id, body, status_code)
+        return jsonify(body), status_code
+    except Exception as e:
+        logger.upload_logger.error(f"Ошибка внутреннего кодирования: {e}")
+        if claimed_id:
+            try:
+                get_job_store().interrupt_request(claimed_id)
+            except Exception:
+                logger.upload_logger.exception('Не удалось сохранить прерывание приёма')
+        return jsonify({'error': f'Ошибка внутреннего кодирования: {str(e)}'}), 500
+
+
+def _receipt_url(request_id):
+    return f'/api/internal/encode/requests/{request_id}'
+
+
+def _internal_receipt_response(receipt):
+    if receipt['state'] == 'ready':
+        return jsonify(json.loads(receipt['body'])), receipt['status_code']
+    response = jsonify({
+        'request_id': receipt['request_id'],
+        'request_status': receipt['state'],
+        'receipt_url': _receipt_url(receipt['request_id']),
+        'job_ids': get_job_store().request_job_ids(receipt['request_id']),
+    })
+    if receipt['state'] == 'processing':
+        response.headers['Retry-After'] = '2'
+    return response, 202
+
+
+@main_bp.route('/api/internal/encode/requests/<request_id>', methods=['GET'])
+def api_internal_encode_receipt(request_id):
+    """Read-only квитанция: не копирует файлы и не запускает задания."""
+    if get_internal_source_roots() is None:
+        return jsonify({'error': 'Внутренний режим кодирования отключён'}), 403
+    receipt = get_job_store().get_request(request_id)
+    if receipt is None:
+        return jsonify({'error': 'Квитанция не найдена'}), 404
+    return _internal_receipt_response(receipt)
+
+
+def _execute_internal_encode(is_json, payload, request_id):
+    try:
 
         try:
             paths, is_batch = _collect_internal_paths(is_json, payload, request)
@@ -966,10 +1059,10 @@ def api_internal_encode():
 
         if is_batch:
             return _encode_internal_batch(
-                paths, ffmpeg_params, video_id, audio_id, audio_downmix
+                paths, ffmpeg_params, video_id, audio_id, audio_downmix, request_id
             )
         return _encode_internal_single(
-            paths[0], ffmpeg_params, video_id, audio_id, audio_downmix
+            paths[0], ffmpeg_params, video_id, audio_id, audio_downmix, request_id
         )
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
@@ -1019,7 +1112,7 @@ def download_jobs_batch():
         job = get_job(job_id)
         if not job or job.status != JobStatus.DONE or not job.output_path:
             continue
-        if not os.path.exists(job.output_path):
+        if job.available_output_size() is None:
             missing.append({
                 'job_id': job.id,
                 'filename': job.get_output_filename(),
@@ -1116,6 +1209,7 @@ def delete_job_by_id(job_id: str) -> dict:
         cleanup_job_sidecars(job.output_path, job.id)
 
     jobs_storage = get_jobs_storage()
+    get_job_store().delete_job(job_id)
     if job_id in jobs_storage:
         del jobs_storage[job_id]
 
@@ -1178,14 +1272,17 @@ def download_file(job_id):
     if job.status != JobStatus.DONE:
         return jsonify({'error': 'Файл еще не готов'}), 400
     
-    if not job.output_path or not os.path.exists(job.output_path):
+    if job.available_output_size() is None:
         return jsonify({'error': 'Выходной файл не найден'}), 404
     
-    return send_file(
-        job.output_path,
-        as_attachment=True,
-        download_name=job.get_output_filename()
-    )
+    try:
+        return send_file(
+            job.output_path,
+            as_attachment=True,
+            download_name=job.get_output_filename()
+        )
+    except OSError:
+        return jsonify({'error': 'Выходной файл не найден'}), 404
 
 @main_bp.route('/api/jobs/<job_id>/delete', methods=['DELETE'])
 def delete_job(job_id):
@@ -1218,6 +1315,7 @@ def stop_job(job_id):
         if job:
             if not job.completed_at:
                 job.completed_at = utc_now()
+            get_job_store().save_job(job)
             _emit_job_update(job)
         
         return jsonify({

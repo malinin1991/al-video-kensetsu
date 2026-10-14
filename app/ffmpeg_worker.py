@@ -180,6 +180,10 @@ class FFmpegWorker:
                 return
 
             logger.main_logger.info(f"Начало обработки задания {job.id}: {job.filename}")
+            # Путь должен попасть в сохранённый IN_PROGRESS до запуска процесса.
+            output_filename = job.get_output_filename()
+            output_path = os.path.join('/app/outputs', output_filename)
+            job.output_path = output_path
             
             job.status = JobStatus.IN_PROGRESS
             job.started_at = utc_now()
@@ -190,11 +194,6 @@ class FFmpegWorker:
                 logger.main_logger.info(f"Задание {job.id} отменено сразу после старта статуса — пропуск FFmpeg")
                 self._mark_job_cancelled(job)
                 return
-            
-            # Генерируем имя выходного файла
-            output_filename = job.get_output_filename()
-            output_path = os.path.join('/app/outputs', output_filename)
-            job.output_path = output_path
             
             logger.main_logger.info(f"Выходной файл: {output_path}")
 

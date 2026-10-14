@@ -1,8 +1,9 @@
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from enum import Enum
 from datetime import datetime, timezone
 import hashlib
 import os
+import stat
 from .presets import (
     DEFAULT_AUDIO_ID,
     DEFAULT_VIDEO_ID,
@@ -52,6 +53,8 @@ class Job:
     video_id: str = DEFAULT_VIDEO_ID
     audio_id: str = DEFAULT_AUDIO_ID
     audio_downmix: str = "none"
+    input_path: str | None = None
+    request_id: str | None = None
     
     def __post_init__(self):
         if self.created_at is None:
@@ -106,6 +109,35 @@ class Job:
             video_id=self.video_id,
             audio_id=self.audio_id,
         )
+
+    def available_output_size(self) -> int | None:
+        """Размер доступного финального файла; видео не читается."""
+        if self.status != JobStatus.DONE or not self.output_path:
+            return None
+        try:
+            info = os.stat(self.output_path)
+            if stat.S_ISREG(info.st_mode) and os.access(self.output_path, os.R_OK):
+                return info.st_size
+        except OSError:
+            pass
+        return None
+
+    def to_record(self) -> dict:
+        """Внутренняя запись для диска, включая рабочие пути и хеш."""
+        record = asdict(self)
+        record['status'] = self.status.value
+        for key in ('created_at', 'started_at', 'completed_at'):
+            record[key] = _iso_utc(getattr(self, key))
+        return record
+
+    @classmethod
+    def from_record(cls, record: dict) -> 'Job':
+        record = dict(record)
+        record['status'] = JobStatus(record['status'])
+        for key in ('created_at', 'started_at', 'completed_at'):
+            value = record.get(key)
+            record[key] = datetime.fromisoformat(value) if value else None
+        return cls(**record)
     
     def to_dict(self):
         """Преобразует объект в словарь для JSON сериализации"""
@@ -118,10 +150,16 @@ class Job:
                 else:
                     safe_ffmpeg_params[key] = value
         
+        output_size = self.available_output_size()
         return {
             'id': self.id,
+            'input_path': self.input_path,
+            'request_id': self.request_id,
             'filename': self.filename,
             'output_filename': self.get_output_filename(),
+            'output_available': output_size is not None,
+            'download_url': f'/api/jobs/{self.id}/download' if output_size is not None else None,
+            'output_size_bytes': output_size,
             'status': self.status.value,
             'progress': self.progress,
             'error_message': self.error_message,

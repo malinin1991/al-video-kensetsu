@@ -4,13 +4,14 @@
 
 ## Возможности
 
-- **Загрузка файлов**: Поддержка одиночных видео файлов (.mp4, .mkv) и ZIP архивов
+- **Загрузка файлов**: Поддержка одиночных и нескольких видеофайлов (.mp4, .mkv)
+- **Кодирование с хранилища**: Обработка файлов из разрешённых каталогов внутри контейнера
 - **Система пресетов**: Готовые настройки кодирования для различных сценариев
 - **Real-time обновления**: Прогресс кодирования и логи обновляются в реальном времени через WebSocket
 - **Настраиваемые параметры**: Полная настройка параметров FFmpeg через веб-интерфейс
 - **Расширенные настройки аудио**: Битрейт и частота дискретизации для AAC/Opus
 - **Управление заданиями**: Просмотр, остановка, скачивание и удаление заданий
-- **Автоматическая очистка**: Исходные файлы удаляются после успешного кодирования
+- **Автоматическая очистка**: Временные копии исходников удаляются после успешного кодирования; файлы хранилища сохраняются
 
 ## Технологии
 
@@ -23,37 +24,39 @@
 
 ## Структура проекта
 
+Подробная карта файлов и поток обработки: **[docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md)**.
+Команды разработки, конфигурация и тесты: **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)**.
+Краткие заметки и правила для агента: **[AGENTS.md](AGENTS.md)**.
+
 ```
-project/
+al-web-video-encoder/
+├── run.py                   # Запуск сервера Socket.IO на порту 5000
 ├── app/
-│   ├── main.py              # Основное Flask приложение
-│   ├── routes.py            # API маршруты
-│   ├── ffmpeg_worker.py     # Воркер для кодирования видео
-│   ├── ffmpeg_bootstrap.py  # Runtime-загрузка / пути FFmpeg
-│   ├── file_utils.py        # Утилиты для работы с файлами
-│   ├── models/
-│   │   ├── job.py           # Модель задания
-│   │   └── presets.py       # Система пресетов
-│   ├── static/js/
-│   │   ├── upload.js        # JavaScript для загрузки
-│   │   └── logs.js          # JavaScript для логов
-│   └── templates/
-│       ├── base.html        # Базовый шаблон
-│       ├── index.html       # Главная страница
-│       └── logs.html        # Страница логов
-├── presets/                 # YAML пресеты по слоям
-│   ├── video/               # hevc_rip (default), hevc_remux
-│   ├── audio/               # copy (default), opus, aac, aac_fdk, none
-│   ├── subtitles/           # copy (default), none — не в UI
-│   └── data/                # copy (default), none — не в UI
-├── docs/
-│   └── API.md               # Спецификация HTTP API для интеграций
-├── docker/
-│   ├── Dockerfile           # Docker образ (без FFmpeg в build; MKVToolNix из официального APT)
-│   └── entrypoint.sh        # PATH + bootstrap FFmpeg
-├── docker-compose.yml       # Docker Compose конфигурация
-├── requirements.txt         # Python зависимости
-└── README.md               # Документация
+│   ├── main.py              # Flask, Socket.IO, callbacks воркера
+│   ├── routes.py            # Страницы, HTTP API и хранилище заданий в памяти
+│   ├── ffmpeg_worker.py     # Очередь, параллельность, FFmpeg и финализация
+│   ├── ffmpeg_bootstrap.py  # Пути бинарников и runtime-загрузка FFmpeg
+│   ├── mkvmerge_remux.py    # Метаданные, флаги дорожек и remux MKV
+│   ├── audio_downmix.py     # Выборочный stereo downmix
+│   ├── internal_source.py   # Разрешённые пути и временные копии исходников
+│   ├── file_utils.py        # Проверка расширений, имена, размеры и хеши
+│   ├── settings_store.py    # Настройки в JSON
+│   ├── job_store.py         # Задания и квитанции internal encode в SQLite
+│   ├── logger.py            # Файловые и системные логи
+│   ├── log_manager.py       # Логи в памяти для UI
+│   ├── models/              # Job, статусы и слои пресетов
+│   ├── templates/           # Jinja: загрузка, настройки, логи, система
+│   ├── static/              # JavaScript и CSS без сборщика
+│   └── assets/empty.ass     # Пустая дорожка субтитров для remux
+├── presets/                 # YAML слои video / audio / subtitles / data
+├── tests/                   # pytest: API, настройки, воркер, downmix, remux
+├── docs/                    # Карта проекта, разработка и контракт API
+├── docker/                  # Dockerfile и entrypoint
+├── docker-compose*.yml      # Варианты запуска и хранения данных
+├── scripts/                 # Сборка и публикация Docker образов
+├── .github/workflows/       # Публикация образа в CI
+├── requirements.txt         # Зависимости приложения
+└── requirements-dev.txt     # pytest
 ```
 
 ## Быстрый старт
@@ -67,14 +70,8 @@ cd al-web-video-encoder
 
 ### 2. Запуск через Docker Compose
 
-#### Автоматический запуск (рекомендуется)
 ```bash
-./run.py
-```
-
-#### Ручной запуск
-```bash
-docker-compose up --build
+docker compose up --build
 ```
 
 Система будет доступна по адресу: http://localhost:3000
@@ -119,35 +116,35 @@ docker compose -f docker-compose.windows.yml up --build
 # Установка зависимостей
 pip install -r requirements.txt
 
-# Установка FFmpeg (Ubuntu/Debian)
-sudo apt update
-sudo apt install ffmpeg
-
-# Запуск приложения
-python -m app.main
+# Запуск сервера (после подготовки бинарников и каталогов данных)
+python run.py
 ```
+
+Локальный сервер слушает порт **5000**. Для обработки файлов нужны FFmpeg,
+ffprobe и MKVToolNix, а также доступ на запись в `/app/outputs`.
+Подготовка локального окружения и ограничения описаны в [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## Использование
 
 ### Загрузка файлов
 
-1. Откройте главную страницу (http://localhost:5000)
+1. Откройте главную страницу (http://localhost:3000 при запуске через Compose)
 2. Выберите файл для загрузки:
-   - Одиночный видео файл (.mp4, .mkv)
-   - ZIP архив с видео файлами
+   - Один или несколько видеофайлов (.mp4, .mkv)
+   - Либо переключитесь на «С хранилища» и укажите разрешённый путь внутри контейнера
 3. Настройте параметры кодирования FFmpeg
-4. Нажмите "Загрузить"
+4. Нажмите «Загрузить» для файлов или «Кодировать» для хранилища
 
 ### Система пресетов
 
-Система включает готовые пресеты для различных сценариев кодирования:
+Видео и аудио выбираются независимо:
 
-- **По умолчанию** - Стандартные настройки HEVC с копированием аудио
-- **HEVC + AAC** - HEVC видео с AAC аудио (128k, 48kHz)
-- **HEVC + Opus** - HEVC видео с Opus аудио (128k, 48kHz)
-- **Высокое качество** - Максимальное качество для архивирования
-- **Быстрое кодирование** - Быстрое кодирование с приемлемым качеством
-- **Оптимизация для аниме** - Специальные настройки для аниме и мультфильмов
+- **Видео**: `hevc_rip` (по умолчанию), `hevc_auto_level_rip`, `hevc_remux`
+- **Аудио**: `copy` (по умолчанию), `opus` (160k VBR), `aac` (192k), `aac_fdk` (192k), `none`
+- **Субтитры и данные**: внутренние слои `copy` / `none`; при аудио `none` также отключаются
+
+`hevc_remux` — пресет перекодирования через libx265. Сборкой контейнера после
+кодирования управляет отдельный модуль `mkvmerge_remux.py`.
 
 ### Параметры кодирования
 
@@ -157,13 +154,13 @@ python -m app.main
 - **Кодек видео**: H.265 (HEVC) - единственный поддерживаемый кодек
 - **Скорость кодирования**: ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow
 - **Качество (CRF)**: От 0 (без потерь) до 51 (низкое качество)
-- **Формат пикселей**: 8-bit (yuv420p) или 10-bit (yuv420p10le) цвет
+- **Формат пикселей**: auto, 8-bit (yuv420p), 10-bit (yuv420p10le) или 10-bit 4:4:4 (yuv444p10le)
 - **Оптимизация (x265 tune)**: none (не передаётся), animation, grain, psnr, ssim, fastdecode, zerolatency
 - **Настройки аудио**: Битрейт и частота дискретизации для AAC/Opus
 
 ### Мониторинг заданий
 
-- **Статусы**: Запланировано (серый), Выполняется (желтый), Готово (зеленый), Ошибка (красный)
+- **Статусы**: Запланировано, Выполняется, Готово, Ошибка, Отменено
 - **Прогресс**: Real-time обновление процента выполнения
 - **Логи**: Live вывод FFmpeg в реальном времени
 - **Действия**: Скачивание, остановка, удаление заданий
@@ -176,6 +173,8 @@ python -m app.main
 
 - `GET /` - Главная страница
 - `GET /logs` - Страница логов
+- `GET /settings` - Настройки параллельного кодирования
+- `GET /systeminfo` - Состояние системы и медиабинарников
 - `GET /health` - Проверка здоровья системы
 
 ### API для заданий
@@ -184,6 +183,7 @@ python -m app.main
 - `GET /api/jobs/<job_id>` - Конкретное задание
 - `POST /api/upload` - Загрузка файла или пачки (`file` / `files` + `video_id` + `audio_id` + `audio_downmix`)
 - `POST /api/internal/encode` - Кодирование с хранилища (`path` / `paths` + те же поля)
+- `GET /api/internal/encode/requests/<request_id>` - Квитанция идемпотентного запроса
 - `GET /api/jobs/<job_id>/download` - Скачивание результата
 - `POST /api/jobs/download` - Пакетное скачивание готовых в ZIP (`ZIP_STORED`, имя `kensetsu-{blake2b8}.zip`)
 - `DELETE /api/jobs/<job_id>/delete` - Удаление задания
@@ -207,7 +207,7 @@ python -m app.main
 
 | Слой | ids | UI |
 |------|-----|----|
-| video | `hevc_rip` (default), `hevc_remux` | да |
+| video | `hevc_rip` (default), `hevc_auto_level_rip`, `hevc_remux` | да |
 | audio | `copy` (default), `opus`, `aac`, `aac_fdk`, `none` | да |
 | subtitles | `copy` (default), `none` | нет |
 | data | `copy` (default), `none` | нет |
@@ -215,7 +215,7 @@ python -m app.main
 `audio_downmix`: `none` \| `stereo` — selective downmix только для дорожек с >2 каналами (ATSC LoRo pan без LFE).  
 При `audio_id=none` автоматически `subtitles=none` и `data=none`.
 
-В каждом YAML ровно один пресет слоя с `default: true`.
+В каждом слое ровно один пресет с `default: true`.
 
 ### WebSocket события
 
@@ -303,6 +303,8 @@ FFmpeg **не встраивается в образ** при `docker build`. П
 - `uploads` - Загруженные файлы
 - `outputs` - Закодированные файлы
 - `logs` - Логи системы
+- `settings` - Настройки (`app_settings.json`) и SQLite заданий/квитанций (`jobs.sqlite3`)
+- `data` - Дополнительный каталог данных (`/app/data`)
 - `ffmpeg_bin` - Бинарники FFmpeg (`/app/ffmpeg`)
 
 ### Хранение на диске хоста
@@ -338,7 +340,12 @@ FFmpeg **не встраивается в образ** при `docker build`. П
    docker compose -f docker-compose.windows.yml up --build
    ```
 
-После этого файлы будут доступны в `./data/` на хосте. Список заданий в интерфейсе хранится в памяти и сбрасывается при перезапуске контейнера, но закодированные файлы на диске сохраняются.
+После этого файлы будут доступны в `./data/` на хосте. История заданий и квитанции
+сохраняются в `/app/settings/jobs.sqlite3` (`JOB_STORE_PATH`) и восстанавливаются
+после перезапуска. Незавершённые задания получают `error` с причиной прерывания,
+автоматического повторного запуска нет. Сохраняйте том `settings` вместе с outputs;
+при потере SQLite теряется история идемпотентности. Контракт `input_path`,
+доступности результата и `request_id` описан в [docs/API.md](docs/API.md).
 
 ## Сборка и публикация образа в приватный registry
 
@@ -527,9 +534,9 @@ x265 [error]: unable to set thread affinity for NUMA node mask
 
 ## Безопасность
 
-- Все загруженные файлы проверяются на тип
-- Исходные файлы автоматически удаляются после кодирования
-- WebSocket соединения защищены от CSRF
+- Загружаемые файлы проверяются по расширению `.mp4` / `.mkv`
+- Временные копии исходников удаляются после успешного кодирования; исходники хранилища сохраняются
+- Разрешённые origins HTTP и Socket.IO задаются через `CORS_ORIGINS`; авторизации в API сейчас нет
 - Ограничение размера загружаемых файлов (16GB)
 
 ## Лицензия

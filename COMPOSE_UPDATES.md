@@ -2,6 +2,11 @@
 
 ## Внесенные изменения
 
+Актуальное назначение каждого Compose файла описано в [карте проекта](docs/PROJECT_STRUCTURE.md).
+Команды разработки и pytest — в [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+Списки origins ниже относятся к описываемым изменениям; текущие значения
+смотрите в `environment:` соответствующего YAML.
+
 Во все Docker Compose файлы добавлены следующие переменные окружения для исправления проблем с Socket.IO:
 
 ### Добавленные переменные:
@@ -43,10 +48,14 @@ docker-compose -f docker-compose.dev.yml up --build
 docker-compose -f docker-compose.prod.yml up --build
 ```
 
-### Тестирование:
+### Отдельный сервер для ручной проверки:
 ```bash
 docker-compose -f docker-compose.test.yml up --build
 ```
+
+Этот вариант слушает порт 5001 и использует отдельные тома. Автоматические
+тесты запускаются из корня командой `python -m pytest -q tests` после установки
+`requirements.txt` и `requirements-dev.txt`.
 
 ### Windows:
 ```bash
@@ -55,5 +64,6 @@ docker-compose -f docker-compose.windows.yml up --build
 
 ## Результат
 
-Эти изменения должны устранить ошибки 400 при подключении WebSocket во всех режимах работы приложения.
+При ошибках 400 проверьте фактический origin браузера, `CORS_ORIGINS` сервера
+и запросы `/socket.io/`. Диагностика описана в [WEBSOCKET_TROUBLESHOOTING.md](WEBSOCKET_TROUBLESHOOTING.md).
 

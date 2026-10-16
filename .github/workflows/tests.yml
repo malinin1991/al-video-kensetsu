@@ -16,11 +16,6 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ['3.15.0', '3.15.0t']
-    env:
-      LOG_DIR: ${{ runner.temp }}/encoder-logs
-      APP_SETTINGS_PATH: ${{ runner.temp }}/encoder-settings.json
-      UPLOADS_DIR: ${{ runner.temp }}/encoder-uploads
-      OUTPUTS_DIR: ${{ runner.temp }}/encoder-outputs
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v7
@@ -40,6 +35,11 @@ jobs:
           assert not free_threaded or not sys._is_gil_enabled()
           PY
       - name: Run backend tests
+        env:
+          LOG_DIR: ${{ runner.temp }}/encoder-logs
+          APP_SETTINGS_PATH: ${{ runner.temp }}/encoder-settings.json
+          UPLOADS_DIR: ${{ runner.temp }}/encoder-uploads
+          OUTPUTS_DIR: ${{ runner.temp }}/encoder-outputs
         run: python -m pytest -q tests
       - name: Check dependency consistency
         run: python -m pip check

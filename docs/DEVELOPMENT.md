@@ -311,6 +311,9 @@ RUN_REAL_MEDIA_TESTS=1 python -m pytest -q tests/test_real_media.py
 `.github/workflows/tests.yml` проверяет backend на Python 3.15/3.15t и frontend
 на Node.js 22 при push/PR. Docker Publish вызывает этот workflow и ждёт успешных
 проверок до сборки/публикации. Opt-in медиатест в обычном CI пропускается.
+Временные каталоги через `runner.temp` задаются в `env` шага backend-тестов:
+на уровне `jobs.<job>.env` этот context недоступен. Workflow можно проверить
+валидатором `actionlint .github/workflows/*.yml` до отправки изменений.
 Windows `Makefile.windows` сохраняет отдельный старый сценарий; для pytest
 используйте прямую команду выше.
 

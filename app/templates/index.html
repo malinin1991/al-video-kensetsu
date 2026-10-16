@@ -71,6 +71,7 @@
                     <button type="submit" class="btn btn-primary" id="uploadBtn">
                         <i class="bi bi-upload"></i> Загрузить
                     </button>
+                    <div class="form-text mt-2">Параметры ниже применяются ко всем выбранным файлам и фиксируются при запуске загрузки.</div>
                 </form>
             </div>
         </div>
@@ -81,7 +82,7 @@
                 <h5 class="card-title mb-0">
                     <i class="bi bi-speedometer2"></i> Настройки производительности
                     <button class="btn btn-sm btn-outline-secondary float-end" type="button" data-bs-toggle="collapse" 
-                            data-bs-target="#performanceSettings" aria-expanded="false" aria-controls="performanceSettings">
+                            data-bs-target="#performanceSettings" aria-expanded="false" aria-controls="performanceSettings" aria-label="Показать или скрыть настройки производительности">
                         <i class="bi bi-chevron-down" id="performanceToggleIcon"></i>
                     </button>
                 </h5>
@@ -139,7 +140,7 @@
                 <h5 class="card-title mb-0">
                     <i class="bi bi-tags"></i> Обновление метаданных
                     <button class="btn btn-sm btn-outline-secondary float-end" type="button" data-bs-toggle="collapse"
-                            data-bs-target="#metadataSettings" aria-expanded="true" aria-controls="metadataSettings">
+                            data-bs-target="#metadataSettings" aria-expanded="true" aria-controls="metadataSettings" aria-label="Показать или скрыть настройки метаданных">
                         <i class="bi bi-chevron-up" id="metadataToggleIcon"></i>
                     </button>
                 </h5>
@@ -219,19 +220,19 @@
         <!-- Параметры FFmpeg -->
         <div class="card mt-4">
             <div class="card-header">
-                <div class="row align-items-center">
+                <div class="row align-items-center g-2">
                     <div class="col">
                         <h5 class="card-title mb-0">
                             <i class="bi bi-gear"></i> Параметры кодирования
                         </h5>
                     </div>
                     <div class="col-auto">
-                        <select class="form-select form-select-sm" id="videoSelect" name="video_id" style="width: auto;" title="Видео-профиль">
-                            <option value="hevc_rip">HEVC rip</option>
+                        <select class="form-select form-select-sm" id="videoSelect" name="video_id" title="Видео-профиль" aria-label="Видео-профиль">
+                            <option value="hevc_auto_level_rip">HEVC Rip auto level</option>
                         </select>
                     </div>
                     <div class="col-auto">
-                        <select class="form-select form-select-sm" id="audioSelect" name="audio_id" style="width: auto;" title="Аудио-профиль">
+                        <select class="form-select form-select-sm" id="audioSelect" name="audio_id" title="Аудио-профиль" aria-label="Аудио-профиль">
                             <option value="copy">Copy</option>
                         </select>
                     </div>
@@ -244,16 +245,17 @@
                     </div>
                     <div class="col-auto">
                         <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" 
-                                data-bs-target="#encodingSettings" aria-expanded="false" aria-controls="encodingSettings">
+                                data-bs-target="#encodingSettings" aria-expanded="false" aria-controls="encodingSettings" aria-label="Показать или скрыть параметры кодирования">
                             <i class="bi bi-chevron-down" id="encodingToggleIcon"></i>
                         </button>
                     </div>
                 </div>
+                <div class="form-text" id="presetSelectionStatus" aria-live="polite">Загрузка профилей…</div>
             </div>
             <div class="collapse" id="encodingSettings">
             <div class="card-body">
                 <form id="ffmpegForm">
-                    <input type="hidden" id="videoId" name="video_id" value="hevc_rip">
+                    <input type="hidden" id="videoId" name="video_id" value="hevc_auto_level_rip">
                     <input type="hidden" id="audioId" name="audio_id" value="copy">
                     <input type="hidden" id="presetModified" name="preset_modified" value="false">
                     <div class="row">
@@ -269,7 +271,7 @@
                                 <label for="audioMap" class="form-label">Карта аудио</label>
                                 <input type="text" class="form-control" id="audioMap" name="audio_map" 
                                        value="0:a?">
-                                <div class="form-help">Первая аудиодорожка исходного файла</div>
+                                <div class="form-help"><code>0:a?</code> — все аудиодорожки, если они есть</div>
                             </div>
                             
                             <div class="mb-3" id="subtitleMapContainer">
@@ -280,10 +282,10 @@
                             </div>
                             
                             <div class="mb-3" id="dataMapContainer">
-                                <label for="dataMap" class="form-label">Карта данных</label>
+                                <label for="dataMap" class="form-label">Карта вложений</label>
                                 <input type="text" class="form-control" id="dataMap" name="data_map" 
                                        value="0:t?">
-                                <div class="form-help">Включает дополнительные потоки данных (например, главы)</div>
+                                <div class="form-help">Вложения контейнера, например шрифты субтитров</div>
                             </div>
                             
                             <div class="mb-3">
@@ -371,12 +373,12 @@
                         
                         <div class="col-md-6">
                             <div class="mb-3">
-                                <label for="dataCodec" class="form-label">Кодек данных</label>
+                                <label for="dataCodec" class="form-label">Вложения</label>
                                 <select class="form-select" id="dataCodec" name="data_codec">
                                     <option value="copy" selected>Копировать</option>
                                     <option value="remove">❌ Удалить</option>
                                 </select>
-                                <div class="form-help">Копирует дополнительные потоки без перекодирования</div>
+                                <div class="form-help">Сохраняет вложения, например шрифты субтитров</div>
                             </div>
                         </div>
                     </div>
@@ -392,7 +394,7 @@
                                     <option value="opus">Opus (160k VBR)</option>
                                     <option value="remove">❌ Удалить</option>
                                 </select>
-                                <div class="form-help">Копирует аудио без сжатия</div>
+                                <div class="form-help">«Копировать» сохраняет аудио без перекодирования</div>
                             </div>
                             
                             <!-- Дополнительные настройки аудио (показываются только если кодек != copy) -->
@@ -464,8 +466,8 @@
                 <div class="alert alert-info py-2 mb-3" role="note">
                     <small>
                         <i class="bi bi-info-circle"></i>
-                        Список заданий хранится в памяти и сбрасывается при перезапуске контейнера.
-                        Закодированные файлы на диске сохраняются.
+                        История заданий и готовые файлы сохраняются после перезапуска.
+                        Незавершённые задания получают статус ошибки; запустите их заново вручную.
                     </small>
                 </div>
                 <div class="jobs-batch-toolbar mb-3" id="jobsBatchToolbar">
@@ -726,6 +728,7 @@ function setupPresetModifiedTracking() {
         if (presetModified) {
             presetModified.value = 'true';
         }
+        updatePresetSelectionStatus();
     };
 
     ffmpegForm.querySelectorAll('input, select, textarea').forEach(element => {
@@ -733,6 +736,16 @@ function setupPresetModifiedTracking() {
         element.addEventListener('change', markModified);
         element.addEventListener('input', markModified);
     });
+}
+
+function updatePresetSelectionStatus() {
+    const status = document.getElementById('presetSelectionStatus');
+    if (!status) return;
+    const modified = document.getElementById('presetModified')?.value === 'true';
+    status.textContent = modified
+        ? 'Параметры изменены вручную. Выбор профиля восстановит его настройки.'
+        : 'Настройки выбранных профилей';
+    status.classList.toggle('text-warning', modified);
 }
 
 // Функции для работы с пресетами
@@ -811,7 +824,7 @@ function loadPresets() {
             });
             updateFdkCodecOption(audios);
 
-            const startVideo = defaults.video_id || firstVideo || 'hevc_rip';
+            const startVideo = defaults.video_id || firstVideo || 'hevc_auto_level_rip';
             const startAudio = defaults.audio_id || firstAudio || 'copy';
             videoSelect.value = startVideo;
             audioSelect.value = startAudio;
@@ -819,6 +832,8 @@ function loadPresets() {
         })
         .catch(error => {
             console.error('Ошибка загрузки пресетов:', error);
+            const status = document.getElementById('presetSelectionStatus');
+            if (status) status.textContent = 'Профили не загружены. Обновите страницу.';
             showAlert('warning', 'Ошибка загрузки пресетов: ' + error.message);
         });
 }
@@ -857,7 +872,7 @@ function onAudioSelectChange(audioId) {
         }
     }
     const videoSelect = document.getElementById('videoSelect');
-    const videoId = videoSelect ? videoSelect.value : 'hevc_rip';
+    const videoId = videoSelect ? videoSelect.value : 'hevc_auto_level_rip';
     applyLayerSettings(videoId, audioId);
 }
 
@@ -939,6 +954,7 @@ function applyLayerSettings(videoId, audioId) {
     }
 
     updateDownmixAvailability();
+    updatePresetSelectionStatus();
 }
 
 const VIDEO_FIELD_MAP = {
@@ -960,7 +976,7 @@ function setFormField(elementId, value) {
 }
 
 function resetToDefaultSettings() {
-    const defaultsVideo = Object.values(window.videosCache).find((v) => v.default) || { id: 'hevc_rip' };
+    const defaultsVideo = Object.values(window.videosCache).find((v) => v.default) || { id: 'hevc_auto_level_rip' };
     const defaultsAudio = Object.values(window.audiosCache).find((a) => a.default) || { id: 'copy' };
     const videoSelect = document.getElementById('videoSelect');
     const audioSelect = document.getElementById('audioSelect');

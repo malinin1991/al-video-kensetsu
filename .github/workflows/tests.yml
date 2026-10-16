@@ -1,0 +1,56 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.15.0', '3.15.0t']
+    env:
+      LOG_DIR: ${{ runner.temp }}/encoder-logs
+      APP_SETTINGS_PATH: ${{ runner.temp }}/encoder-settings.json
+      UPLOADS_DIR: ${{ runner.temp }}/encoder-uploads
+      OUTPUTS_DIR: ${{ runner.temp }}/encoder-outputs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install test dependencies
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Check free-threading after native imports
+        run: |
+          python - <<'PY'
+          import sys, sysconfig
+          import flask, flask_socketio, yaml, psutil, socketio, engineio
+          free_threaded = bool(sysconfig.get_config_var('Py_GIL_DISABLED'))
+          print({'python': sys.version, 'free_threaded_build': free_threaded,
+                 'gil_enabled': sys._is_gil_enabled(), 'yaml_native': yaml.__with_libyaml__})
+          assert not free_threaded or not sys._is_gil_enabled()
+          PY
+      - name: Run backend tests
+        run: python -m pytest -q tests
+      - name: Check dependency consistency
+        run: python -m pip check
+
+  javascript:
+    name: JavaScript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run frontend tests
+        run: node --test tests/js/*.test.cjs

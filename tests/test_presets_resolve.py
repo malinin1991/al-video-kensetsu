@@ -38,7 +38,7 @@ class TestPresetsResolve:
         }
         assert set(preset_manager.subtitles.keys()) == {'copy', 'none'}
         assert set(preset_manager.data.keys()) == {'copy', 'none'}
-        assert preset_manager.default_video_id == 'hevc_rip'
+        assert preset_manager.default_video_id == 'hevc_auto_level_rip'
         assert preset_manager.default_audio_id == 'copy'
         assert preset_manager.default_subtitles_id == 'copy'
         assert preset_manager.default_data_id == 'copy'
@@ -50,6 +50,7 @@ class TestPresetsResolve:
         params = preset_manager.resolve()
         assert params['preset'] == 'slow'
         assert params['crf'] == '23'
+        assert params['x265_params'] is None
         assert params['audio_codec'] == 'copy'
         assert params['subtitle_map'] == '0:s?'
         assert params['data_map'] == '0:t?'
@@ -216,6 +217,15 @@ class TestPresetsResolve:
         with pytest.raises(ValueError, match='video_codec'):
             PresetManager(presets_dir=str(root))
 
+    def test_yaml_python_tags_remain_rejected(self, tmp_path):
+        directory = tmp_path / 'presets' / 'video'
+        directory.mkdir(parents=True)
+        (directory / 'unsafe.yaml').write_text(
+            '!!python/object/apply:builtins.str [not-a-preset]', encoding='utf-8',
+        )
+        with pytest.raises(yaml.constructor.ConstructorError):
+            PresetManager(presets_dir=str(directory.parent))
+
     def test_incomplete_video_yaml_raises(self, tmp_path):
         root = tmp_path / 'presets'
         video_dir = root / 'video'
@@ -262,7 +272,17 @@ class TestPresetsResolve:
 
     def test_create_default_presets_tmp(self, tmp_path):
         manager = PresetManager(presets_dir=str(tmp_path / 'presets'))
-        assert manager.default_video_id == 'hevc_rip'
+        assert manager.default_video_id == 'hevc_auto_level_rip'
+        assert manager.resolve()['x265_params'] is None
+        auto = yaml.safe_load(
+            (tmp_path / 'presets' / 'video' / 'hevc_auto_level_rip.yaml').read_text(encoding='utf-8')
+        )
+        assert auto['default'] is True
+        assert 'x265_params' not in auto
+        # При повторной загрузке с диска сохраняются те же defaults и три пресета.
+        reloaded = PresetManager(presets_dir=manager.presets_dir)
+        assert reloaded.default_video_id == 'hevc_auto_level_rip'
+        assert set(reloaded.videos) == set(preset_manager.videos)
         assert (tmp_path / 'presets' / 'video' / 'hevc_rip.yaml').exists()
         assert (tmp_path / 'presets' / 'subtitles' / 'copy.yaml').exists()
         assert (tmp_path / 'presets' / 'data' / 'copy.yaml').exists()
@@ -272,6 +292,7 @@ class TestPresetsResolve:
         )
         assert rip['x265_params'] == 'level=5.1:ref=6'
         assert rip['pixel_format'] == 'yuv420p10le'
+        assert rip['default'] is False
 
     def test_missing_data_layer_does_not_wipe_others(self, tmp_path):
         root = tmp_path / 'presets'

@@ -8,7 +8,7 @@ import json
 from typing import Callable
 
 from app.models.job import Job, JobStatus, utc_now
-from app.file_utils import cleanup_file
+from app.file_utils import cleanup_file, get_outputs_dir
 from app.internal_source import (
     cleanup_job_original,
     is_internal_source_path,
@@ -125,9 +125,10 @@ class FFmpegWorker:
         """Добавляет задание в очередь"""
         with self._lock:
             self._cancel_requested.discard(job.id)
+            # Статус задаём до публикации: диспетчер может стартовать немедленно.
+            job.status = JobStatus.PLANNED
             self.job_queue.append(job)
             queue_pos = len(self.job_queue)
-        job.status = JobStatus.PLANNED
         logger.main_logger.info(f"Задание {job.id} добавлено в очередь FFmpeg (позиция: {queue_pos})")
 
     def _is_cancel_requested(self, job_id: str) -> bool:
@@ -182,7 +183,9 @@ class FFmpegWorker:
             logger.main_logger.info(f"Начало обработки задания {job.id}: {job.filename}")
             # Путь должен попасть в сохранённый IN_PROGRESS до запуска процесса.
             output_filename = job.get_output_filename()
-            output_path = os.path.join('/app/outputs', output_filename)
+            output_dir = get_outputs_dir()
+            os.makedirs(output_dir, exist_ok=True)
+            output_path = os.path.join(output_dir, output_filename)
             job.output_path = output_path
             
             job.status = JobStatus.IN_PROGRESS
@@ -648,17 +651,21 @@ class FFmpegWorker:
             self._mark_job_cancelled(job)
             raise RuntimeError('Задание отменено на шаге remux')
 
-        for line in iter(process.stdout.readline, ''):
-            if self.stop_event.is_set() or self._is_cancel_requested(job.id) or job.status == JobStatus.CANCELLED:
-                self._kill_process(process, job.id)
-                break
-            line = line.strip()
-            if line:
-                logger.main_logger.info(f'mkvmerge {job.id}: {line}')
-                if self.log_callback:
-                    self.log_callback(job.id, line)
+        try:
+            for line in iter(process.stdout.readline, ''):
+                if self.stop_event.is_set() or self._is_cancel_requested(job.id) or job.status == JobStatus.CANCELLED:
+                    self._kill_process(process, job.id)
+                    break
+                line = line.strip()
+                if line:
+                    logger.main_logger.info(f'mkvmerge {job.id}: {line}')
+                    if self.log_callback:
+                        self.log_callback(job.id, line)
 
-        return_code = process.wait()
+            return_code = process.wait()
+        except Exception:
+            self._kill_process(process, job.id)
+            raise
 
         if self._is_cancel_requested(job.id) or job.status == JobStatus.CANCELLED:
             self._mark_job_cancelled(job)
@@ -690,7 +697,9 @@ class FFmpegWorker:
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                universal_newlines=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
                 bufsize=1
             )
             with self._lock:
@@ -766,9 +775,11 @@ class FFmpegWorker:
                     self.log_callback(job.id, f"Ошибка FFmpeg: код {return_code}")
         
         except Exception as e:
+            # Ошибка чтения/обработки вывода не должна оставлять encoder живым:
+            # после возврата вызывающий код удаляет временные файлы задания.
+            if process is not None:
+                self._kill_process(process, job.id)
             if self._is_cancel_requested(job.id) or job.status == JobStatus.CANCELLED:
-                if process is not None:
-                    self._kill_process(process, job.id)
                 self._mark_job_cancelled(job)
             else:
                 job.status = JobStatus.ERROR
@@ -915,6 +926,7 @@ class FFmpegWorker:
         removed_from_queue = False
         process = None
         job = None
+        job_thread = None
 
         with self._lock:
             before = len(self.job_queue)
@@ -924,16 +936,26 @@ class FFmpegWorker:
 
             job = self.running_jobs.get(job_id)
             process = self.processes.get(job_id)
+            job_thread = self._job_threads.get(job_id)
 
-        if job is not None:
+        if job is not None and job.status != JobStatus.DONE:
             self._mark_job_cancelled(job)
 
         process_killed = True
         if process is not None:
             process_killed = self._kill_process(process, job_id)
             with self._lock:
-                if self.processes.get(job_id) is process:
+                if process_killed and self.processes.get(job_id) is process:
                     del self.processes[job_id]
+
+        # FFmpeg может ещё не стартовать или уже закончиться, пока поток занят
+        # preflight/remux/finalize. Только завершение потока разрешает очистку.
+        if job_thread is not None and job_thread is not threading.current_thread():
+            job_thread.join(timeout=5)
+        thread_stopped = job_thread is None or not job_thread.is_alive()
+        if thread_stopped and process_killed:
+            with self._lock:
+                self._cancel_requested.discard(job_id)
 
         logger.main_logger.info(
             f"stop_job {job_id}: queue_removed={removed_from_queue}, "
@@ -943,6 +965,7 @@ class FFmpegWorker:
             'removed_from_queue': removed_from_queue,
             'had_process': process is not None,
             'process_dead': process_killed,
+            'thread_stopped': thread_stopped,
         }
     
     def stop_worker(self):

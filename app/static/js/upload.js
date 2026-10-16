@@ -1,3 +1,5 @@
+let uploadInProgress = false;
+
 // Ждем загрузки DOM
 if (window.isDevelopment) {
     console.log('upload.js загружен');
@@ -42,10 +44,12 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     setupSourceModeToggle();
+    setupUploadSocketHandlers();
 
     // Обработчик отправки формы
     uploadForm.addEventListener('submit', async (e) => {
         e.preventDefault();
+        if (uploadInProgress) return;
         if (window.isDevelopment) {
             console.log('Форма отправлена!');
         }
@@ -76,8 +80,9 @@ document.addEventListener('DOMContentLoaded', function() {
             totalUploadProgressDiv.style.display = 'none';
         }
         
-        uploadBtn.disabled = true;
+        setUploadBusy(true);
         uploadBtn.innerHTML = '<i class="bi bi-hourglass-split"></i> Загрузка...';
+        updateUploadProgress(0);
         
         try {
             // Определяем размер чанка (4MB)
@@ -93,8 +98,7 @@ document.addEventListener('DOMContentLoaded', function() {
             // Скрываем прогресс и восстанавливаем кнопку
             uploadProgress.style.display = 'none';
             totalUploadProgressDiv.style.display = 'none';
-            uploadBtn.disabled = false;
-            uploadBtn.innerHTML = '<i class="bi bi-upload"></i> Загрузить';
+            setUploadBusy(false);
         }
     });
 
@@ -108,48 +112,53 @@ function isStorageSourceMode() {
 function setupSourceModeToggle() {
     const deviceRadio = document.getElementById('sourceModeDevice');
     const storageRadio = document.getElementById('sourceModeStorage');
+    deviceRadio?.addEventListener('change', applySourceMode);
+    storageRadio?.addEventListener('change', applySourceMode);
+    applySourceMode();
+}
+
+function setUploadBusy(busy) {
+    uploadInProgress = busy;
+    ['sourceModeDevice', 'sourceModeStorage', 'fileInput', 'storagePathInput', 'uploadBtn'].forEach((id) => {
+        const element = document.getElementById(id);
+        if (element) element.disabled = busy;
+    });
+    if (!busy) applySourceMode();
+}
+
+function applySourceMode() {
     const deviceFields = document.getElementById('deviceSourceFields');
     const storageFields = document.getElementById('storageSourceFields');
     const fileInput = document.getElementById('fileInput');
     const storagePathInput = document.getElementById('storagePathInput');
     const uploadBtn = document.getElementById('uploadBtn');
 
-    const applyMode = () => {
-        const storage = isStorageSourceMode();
-        if (deviceFields) {
-            deviceFields.style.display = storage ? 'none' : 'block';
-        }
-        if (storageFields) {
-            storageFields.style.display = storage ? 'block' : 'none';
-        }
-        if (fileInput) {
-            if (storage) {
-                fileInput.removeAttribute('required');
-            } else {
-                fileInput.setAttribute('required', 'required');
-            }
-        }
-        if (storagePathInput) {
-            if (storage) {
-                storagePathInput.setAttribute('required', 'required');
-            } else {
-                storagePathInput.removeAttribute('required');
-            }
-        }
-        if (uploadBtn && !uploadBtn.disabled) {
-            uploadBtn.innerHTML = storage
-                ? '<i class="bi bi-hdd-network"></i> Кодировать'
-                : '<i class="bi bi-upload"></i> Загрузить';
-        }
-    };
-
-    if (deviceRadio) {
-        deviceRadio.addEventListener('change', applyMode);
+    const storage = isStorageSourceMode();
+    if (deviceFields) {
+        deviceFields.style.display = storage ? 'none' : 'block';
     }
-    if (storageRadio) {
-        storageRadio.addEventListener('change', applyMode);
+    if (storageFields) {
+        storageFields.style.display = storage ? 'block' : 'none';
     }
-    applyMode();
+    if (fileInput) {
+        if (storage) {
+            fileInput.removeAttribute('required');
+        } else {
+            fileInput.setAttribute('required', 'required');
+        }
+    }
+    if (storagePathInput) {
+        if (storage) {
+            storagePathInput.setAttribute('required', 'required');
+        } else {
+            storagePathInput.removeAttribute('required');
+        }
+    }
+    if (uploadBtn && !uploadBtn.disabled) {
+        uploadBtn.innerHTML = storage
+            ? '<i class="bi bi-hdd-network"></i> Кодировать'
+            : '<i class="bi bi-upload"></i> Загрузить';
+    }
 }
 
 function setCopyingProgress(active) {
@@ -195,6 +204,7 @@ async function submitInternalEncode() {
     }
 
     setCopyingProgress(true);
+    setUploadBusy(true);
     if (uploadBtn) {
         uploadBtn.disabled = true;
         uploadBtn.innerHTML = '<i class="bi bi-hourglass-split"></i> Копирование файла…';
@@ -227,14 +237,39 @@ async function submitInternalEncode() {
         showAlert('danger', error.message || 'Ошибка кодирования с хранилища');
     } finally {
         setCopyingProgress(false);
-        if (uploadBtn) {
-            uploadBtn.disabled = false;
-            uploadBtn.innerHTML = '<i class="bi bi-hdd-network"></i> Кодировать';
-        }
+        setUploadBusy(false);
     }
 }
 
-async function uploadMultipleFiles(files, chunkSize) {
+function captureEncodingParameters() {
+    const parameters = new FormData();
+    addFormDataToFormData(parameters);
+    return parameters;
+}
+
+function retainFailedUploadFiles(files) {
+    const input = document.getElementById('fileInput');
+    if (!input) return;
+    if (files.length === 0) {
+        input.value = '';
+        return;
+    }
+    if (typeof DataTransfer !== 'undefined') {
+        try {
+            const selection = new DataTransfer();
+            files.forEach((file) => selection.items.add(file));
+            input.files = selection.files;
+            return;
+        } catch (_error) {
+            // Браузер может запретить программную замену FileList.
+        }
+    }
+    // Не оставляем успешно принятые файлы для случайной повторной отправки.
+    input.value = '';
+    showAlert('warning', 'Выберите повторно только непринятые файлы');
+}
+
+async function uploadMultipleFiles(files, chunkSize, parameters = captureEncodingParameters()) {
     // Загружает несколько файлов: one-shot multipart если все ≤ chunkSize
     const totalFiles = files.length;
     let uploadedFiles = 0;
@@ -250,19 +285,19 @@ async function uploadMultipleFiles(files, chunkSize) {
     const allDirect = files.every(file => file.size <= chunkSize);
     if (totalFiles > 1 && allDirect) {
         try {
-            await uploadFilesBatch(files, (progress) => {
+            const result = await uploadFilesBatch(files, (progress) => {
                 updateTotalUploadProgress(progress);
-            });
-            uploadedFiles = totalFiles;
+            }, parameters);
+            uploadedFiles = Array.isArray(result.jobs) ? result.jobs.length : (result.job ? 1 : 0);
+            const errors = result.errors || [];
             updateTotalUploadProgress(100);
-            showAlert('success', `Успешно загружено файлов: ${uploadedFiles}`);
-            const form = document.getElementById('uploadForm');
-            const input = document.getElementById('fileInput');
-            if (form) {
-                form.reset();
-            }
-            if (input) {
-                input.value = '';
+            if (errors.length > 0) {
+                const failedNames = new Set(errors.map((item) => item.filename));
+                retainFailedUploadFiles(files.filter((file) => failedNames.has(file.name)));
+                showAlert('warning', `Создано заданий: ${uploadedFiles} из ${totalFiles}. Не приняты: ${errors.map((item) => `${item.filename || '?'} — ${item.error || 'ошибка'}`).join('; ')}`);
+            } else {
+                retainFailedUploadFiles([]);
+                showAlert('success', `Создано заданий: ${uploadedFiles}`);
             }
             refreshJobsList();
         } catch (error) {
@@ -272,6 +307,7 @@ async function uploadMultipleFiles(files, chunkSize) {
         return;
     }
 
+    const failedFiles = [];
     for (let i = 0; i < files.length; i++) {
         const file = files[i];
 
@@ -285,13 +321,13 @@ async function uploadMultipleFiles(files, chunkSize) {
                     const fileCompletedBytes = (fileProgress / 100) * file.size;
                     const overallProgress = ((totalUploadedBytes + fileCompletedBytes) / totalSize) * 100;
                     updateTotalUploadProgress(overallProgress);
-                });
+                }, parameters);
             } else {
                 await uploadFileDirectly(file, (fileProgress) => {
                     const fileCompletedBytes = (fileProgress / 100) * file.size;
                     const overallProgress = ((totalUploadedBytes + fileCompletedBytes) / totalSize) * 100;
                     updateTotalUploadProgress(overallProgress);
-                });
+                }, parameters);
             }
 
             uploadedFiles++;
@@ -299,23 +335,15 @@ async function uploadMultipleFiles(files, chunkSize) {
             updateTotalUploadProgress((totalUploadedBytes / totalSize) * 100);
 
         } catch (error) {
+            failedFiles.push(file);
             console.error(`Ошибка загрузки файла ${file.name}:`, error);
-            showAlert('danger', `Ошибка загрузки файла: ${file.name}`);
+            showAlert('danger', `Не принят ${file.name}: ${error.message || 'ошибка загрузки'}`);
         }
     }
 
-    if (uploadedFiles === totalFiles) {
-        showAlert('success', `Успешно загружено файлов: ${uploadedFiles}`);
-        const form = document.getElementById('uploadForm');
-        const input = document.getElementById('fileInput');
-        if (form) {
-            form.reset();
-        }
-        if (input) {
-            input.value = '';
-        }
-        refreshJobsList();
-    }
+    retainFailedUploadFiles(failedFiles);
+    showAlert(uploadedFiles === totalFiles ? 'success' : 'warning', `Создано заданий: ${uploadedFiles} из ${totalFiles}`);
+    refreshJobsList();
 }
 
 function isUploadHttpSuccess(status) {
@@ -336,7 +364,7 @@ function applyUploadJobsFromResult(result) {
     refreshJobsList();
 }
 
-async function uploadFilesBatch(files, progressCallback) {
+async function uploadFilesBatch(files, progressCallback, parameters) {
     // One-shot multipart: несколько parts с именем files + video_id/audio_id
     if (window.isDevelopment) {
         console.log('Batch-загрузка файлов:', files.length);
@@ -345,7 +373,7 @@ async function uploadFilesBatch(files, progressCallback) {
     files.forEach(file => {
         formData.append('files', file);
     });
-    addFormDataToFormData(formData);
+    addFormDataToFormData(formData, parameters);
 
     return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
@@ -373,12 +401,6 @@ async function uploadFilesBatch(files, progressCallback) {
 
             if (isUploadHttpSuccess(xhr.status)) {
                 applyUploadJobsFromResult(result);
-                if (xhr.status === 207 && result.errors && result.errors.length) {
-                    const names = result.errors
-                        .map(item => item.filename || '?')
-                        .join(', ');
-                    showAlert('warning', `Часть файлов не принята: ${names}`);
-                }
                 resolve(result);
                 return;
             }
@@ -395,7 +417,7 @@ async function uploadFilesBatch(files, progressCallback) {
     });
 }
 
-async function uploadFileDirectly(file, progressCallback) {
+async function uploadFileDirectly(file, progressCallback, parameters) {
     // Загружает файл напрямую (для маленьких файлов)
     if (window.isDevelopment) {
         console.log('Загружаем файл напрямую:', file.name);
@@ -404,7 +426,7 @@ async function uploadFileDirectly(file, progressCallback) {
     formData.append('file', file);
 
     // Добавляем параметры FFmpeg
-    addFormDataToFormData(formData);
+    addFormDataToFormData(formData, parameters);
 
     if (window.isDevelopment) {
         console.log('Отправляем запрос на /api/upload');
@@ -453,17 +475,10 @@ async function uploadFileDirectly(file, progressCallback) {
     });
 }
 
-async function uploadFileInChunks(file, chunkSize, progressCallback) {
+async function uploadFileInChunks(file, chunkSize, progressCallback, parameters = captureEncodingParameters()) {
     // Загружает файл по чанкам с догрузкой при ошибке
     const totalChunks = Math.ceil(file.size / chunkSize);
     const fileId = generateFileId();
-    
-    // Добавляем параметры FFmpeg
-    const formData = new FormData();
-    addFormDataToFormData(formData);
-    formData.append('filename', file.name);
-    formData.append('file_id', fileId);
-    formData.append('total_chunks', totalChunks);
     
     let uploadedChunks = 0;
     const maxRetries = 3;
@@ -482,7 +497,7 @@ async function uploadFileInChunks(file, chunkSize, progressCallback) {
         chunkFormData.append('filename', file.name);
         
         // Добавляем параметры FFmpeg
-        addFormDataToFormData(chunkFormData);
+        addFormDataToFormData(chunkFormData, parameters);
         
         let success = false;
         let attempts = 0;
@@ -544,7 +559,11 @@ async function uploadFileInChunks(file, chunkSize, progressCallback) {
     }
 }
 
-function addFormDataToFormData(formData) {
+function addFormDataToFormData(formData, parameters) {
+    if (parameters) {
+        for (const [key, value] of parameters.entries()) formData.append(key, value);
+        return;
+    }
     // Добавляет данные формы в FormData
     // Добавляем параметры FFmpeg
     const ffmpegForm = document.getElementById('ffmpegForm');
@@ -611,16 +630,16 @@ function addFormDataToFormData(formData) {
         const audioCodec = document.getElementById('audioCodec');
         
         if (audioBitrate) {
-            formData.append('audio_bitrate', audioBitrate.value);
+            formData.set('audio_bitrate', audioBitrate.value);
         }
         if (audioSampleRate) {
-            formData.append('audio_sample_rate', audioSampleRate.value);
+            formData.set('audio_sample_rate', audioSampleRate.value);
         }
         const isOpus = audioCodec && (audioCodec.value === 'opus' || audioCodec.value === 'libopus');
         if (isOpus) {
-            formData.append('audio_vbr', audioVbr && audioVbr.checked ? 'true' : 'false');
+            formData.set('audio_vbr', audioVbr && audioVbr.checked ? 'true' : 'false');
         } else if (audioVbr && audioVbr.checked) {
-            formData.append('audio_vbr', 'true');
+            formData.set('audio_vbr', 'true');
         }
     }
 }
@@ -639,7 +658,7 @@ function updateUploadProgress(progress) {
             
             // Плавное обновление прогресса
             progressBar.style.width = `${progressPercent}%`;
-            progressText.textContent = `${progressPercent}%`;
+            progressText.textContent = clampedProgress >= 100 ? 'Создание задания…' : `${progressPercent}%`;
             progressBar.setAttribute('aria-valuenow', clampedProgress);
             progressBar.setAttribute('aria-valuemin', 0);
             progressBar.setAttribute('aria-valuemax', 100);
@@ -684,10 +703,6 @@ function generateFileId() {
 // WebSocket обработчики
 function setupUploadSocketHandlers() {
     if (!window.socket) {
-        if (window.isDevelopment) {
-            console.log('SocketIO не инициализирован для upload, ждем...');
-        }
-        setTimeout(setupUploadSocketHandlers, 100);
         return;
     }
     
@@ -710,9 +725,6 @@ function setupUploadSocketHandlers() {
         }
     });
 }
-
-// Запускаем настройку обработчиков
-setupUploadSocketHandlers();
 
 // Функции для работы с заданиями
 function refreshJobsList() {

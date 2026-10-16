@@ -1,0 +1,102 @@
+{
+  "date": "2026-10-17",
+  "scope": "Flask test client, без сети; 200 Jobs; 200 запросов на раунд; 4 vCPU quota; 1 GiB RAM; Linux arm64; порядок regular/t/t/regular",
+  "results": {
+    "regular": {
+      "python": "3.15.0 (main, Oct 13 2026, 08:13:54) [GCC 14.2.0]",
+      "gil_enabled": true,
+      "yaml_native": true,
+      "jit_available": false,
+      "peak_rss_mib_range": [
+        57.60546875,
+        57.6484375
+      ],
+      "api": [
+        {
+          "endpoint": "/api/jobs",
+          "workers": 1,
+          "rounds": 10,
+          "median_rps": 618.0654908251558,
+          "median_p95_ms": 1.8704794929362833
+        },
+        {
+          "endpoint": "/api/jobs",
+          "workers": 4,
+          "rounds": 10,
+          "median_rps": 635.8649337486472,
+          "median_p95_ms": 28.837354038842022
+        },
+        {
+          "endpoint": "/api/internal/encode/requests/benchmark",
+          "workers": 1,
+          "rounds": 10,
+          "median_rps": 4811.388167942061,
+          "median_p95_ms": 0.22162499953992665
+        },
+        {
+          "endpoint": "/api/internal/encode/requests/benchmark",
+          "workers": 4,
+          "rounds": 10,
+          "median_rps": 3285.9127778614984,
+          "median_p95_ms": 1.8536874849814922
+        }
+      ],
+      "hash_seconds": {
+        "legacy_4k": 0.03251768750487827,
+        "application": 0.029232500004582107
+      },
+      "yaml_parse_seconds_500_documents": {
+        "safe_python": 0.16401883400976658,
+        "application_safe_loader": 0.015366417006589472
+      }
+    },
+    "freethreaded": {
+      "python": "3.15.0 free-threading build (main, Oct 13 2026, 08:52:05) [GCC 14.2.0]",
+      "gil_enabled": false,
+      "yaml_native": true,
+      "jit_available": false,
+      "peak_rss_mib_range": [
+        120.69140625,
+        126.97265625
+      ],
+      "api": [
+        {
+          "endpoint": "/api/jobs",
+          "workers": 1,
+          "rounds": 10,
+          "median_rps": 532.0795924673739,
+          "median_p95_ms": 2.0915830100420862
+        },
+        {
+          "endpoint": "/api/jobs",
+          "workers": 4,
+          "rounds": 10,
+          "median_rps": 979.5696035633595,
+          "median_p95_ms": 4.584479524055496
+        },
+        {
+          "endpoint": "/api/internal/encode/requests/benchmark",
+          "workers": 1,
+          "rounds": 10,
+          "median_rps": 4383.192705418158,
+          "median_p95_ms": 0.24231249699369073
+        },
+        {
+          "endpoint": "/api/internal/encode/requests/benchmark",
+          "workers": 4,
+          "rounds": 10,
+          "median_rps": 9239.909934793592,
+          "median_p95_ms": 0.532645994098857
+        }
+      ],
+      "hash_seconds": {
+        "legacy_4k": 0.033339312532916665,
+        "application": 0.029778479016385972
+      },
+      "yaml_parse_seconds_500_documents": {
+        "safe_python": 0.19784870801959187,
+        "application_safe_loader": 0.01986191695323214
+      }
+    }
+  }
+}

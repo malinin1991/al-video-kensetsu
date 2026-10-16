@@ -9,6 +9,7 @@ from app.audio_downmix import AudioDownmixError, parse_audio_map
 
 
 VALID_AUDIO_DOWNMIX = frozenset({"none", "stereo"})
+_SAFE_YAML_LOADER = getattr(yaml, 'CSafeLoader', yaml.SafeLoader)
 
 
 def _as_bool(value, default: bool = False) -> bool:
@@ -462,7 +463,7 @@ class PresetManager:
                 continue
             path = os.path.join(directory, filename)
             with open(path, "r", encoding="utf-8") as f:
-                payload = yaml.safe_load(f)
+                payload = yaml.load(f, Loader=_SAFE_YAML_LOADER)
             if not payload:
                 continue
             if "id" not in payload or "name" not in payload:
@@ -517,12 +518,25 @@ class PresetManager:
                     id="hevc_rip",
                     name="HEVC rip",
                     description="WEBRip / HDTV / BDRip — libx265 CRF 23 slow",
-                    is_default=True,
+                    is_default=False,
                     video_codec="libx265",
                     preset="slow",
                     crf="23",
                     pixel_format="yuv420p10le",
                     x265_params="level=5.1:ref=6",
+                    tune="animation",
+                    output_format="matroska",
+                    video_map="0:v:0",
+                ),
+                VideoPreset(
+                    id="hevc_auto_level_rip",
+                    name="HEVC rip auto level",
+                    description="WEBRip / HDTV / BDRip — libx265 auto level CRF 23 slow",
+                    is_default=True,
+                    video_codec="libx265",
+                    preset="slow",
+                    crf="23",
+                    pixel_format="yuv420p10le",
                     tune="animation",
                     output_format="matroska",
                     video_map="0:v:0",
@@ -543,7 +557,7 @@ class PresetManager:
                 ),
             ]
             self.videos = {v.id: v for v in videos}
-            self.default_video_id = "hevc_rip"
+            self.default_video_id = "hevc_auto_level_rip"
             for v in videos:
                 self._save_yaml(self.layer_dir("video"), v.id, v.to_dict())
 

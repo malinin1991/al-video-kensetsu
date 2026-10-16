@@ -58,7 +58,12 @@ def normalize_max_concurrent_encodes(value: Any) -> int:
     Нормализует значение лимита параллельности.
     Бросает ValueError при некорректном типе/диапазоне (для API).
     """
-    if value is None or (isinstance(value, str) and not value.strip()):
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise ValueError(
+            f'Макс. одновременных кодирований должно быть целым числом '
+            f'от {MIN_CONCURRENT_ENCODES} до {MAX_CONCURRENT_ENCODES_LIMIT}'
+        )
+    if isinstance(value, str) and not value.strip():
         raise ValueError(
             f'Укажите целое число от {MIN_CONCURRENT_ENCODES} '
             f'до {MAX_CONCURRENT_ENCODES_LIMIT}'

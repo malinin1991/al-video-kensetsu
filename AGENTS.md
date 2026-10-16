@@ -10,6 +10,12 @@
 
 ## Важные особенности
 
+- Runtime — стандартный CPython 3.15.0 (PGO/LTO), `.python-version` и Docker
+  синхронизированы. CI проверяет также 3.15t и отсутствие скрытого включения GIL
+  после native imports. Сравнение и границы замеров — `docs/DEVELOPMENT.md`.
+- SHA256 загрузки и проверки Job используют один `hashlib.file_digest`.
+  YAML читается через CSafeLoader при наличии C-ускорителя, иначе SafeLoader;
+  небезопасные Python tags не разрешены. Docker собирает native wheels отдельным stage.
 - `run.py` запускает Python сервер на 5000. Основной Compose публикует его на 3000.
   Импорт `app.main` создаёт лог-файлы и фоновый воркер; он имеет побочные эффекты.
 - Jobs и квитанции internal encode сохраняются в SQLite (`app/job_store.py`,
@@ -21,6 +27,7 @@
   неизменяем. GET квитанции — `/api/internal/encode/requests/<request_id>`;
   `processing`/`interrupted` дают 202, конфликт параметров — 409.
 - `presets/` содержит слои video/audio/subtitles/data; в каждом ровно один default.
+  Default video — `hevc_auto_level_rip` без фиксированных x265 level/ref.
   YAML загружаются при импорте; после изменений нужен restart.
 - `hevc_remux` тоже перекодирует видео. Remux и правила метаданных реализованы
   отдельно в `app/mkvmerge_remux.py`; FFmpeg metadata flags не заменяют этот этап.
@@ -28,20 +35,25 @@
   Готовность определяется статусом `done`, а не достижением 100% прогресса FFmpeg.
 - Каждому заданию нужен собственный временный исходник. При изменениях очистки
   сохранять библиотечные и используемые другими заданиями файлы.
-- `UPLOADS_DIR`, `LOG_DIR`, `APP_SETTINGS_PATH` настраиваются; outputs жёстко
-  `/app/outputs`. Сохранённые настройки приоритетнее env, включая пустой nickname.
+- `UPLOADS_DIR`, `OUTPUTS_DIR`, `LOG_DIR`, `APP_SETTINGS_PATH` настраиваются;
+  default outputs — `/app/outputs`. Сохранённые настройки приоритетнее env, включая пустой nickname.
 - Пресеты и metadata UI частично реализованы inline в `index.html`;
   `settings.html` и `systeminfo.html` также содержат inline JS.
 - Общие карточки и строки Job — `common.js`; обновления и кэш — `socket.js`.
   Поля вне `ffmpegForm` собираются явно в `upload.js`.
 - ZIP поддерживается для batch download. Загрузка принимает только MP4/MKV.
+- Chunk upload проверяет ID/номера/имя и общий размер файла до сборки;
+  не удалять принятые части при ошибке. Удаление Job ждёт завершения его потока
+  и медиапроцесса; при таймауте возвращает 409 без очистки файлов.
 
 ## Проверка изменений
 
 - Установить `requirements.txt` и `requirements-dev.txt`; команда тестов:
   `python -m pytest -q tests` или подходящие затронутые файлы.
 - Тесты подменяют медиапроцессы; они не заменяют проверку реального кодирования.
-- `docker-compose.test.yml` и `make test` поднимают сервер, а не запускают pytest.
+- `make test` запускает pytest и `node --test tests/js/*.test.cjs` (Node.js 22+).
+  `docker-compose.test.yml` / `make test-server` поднимают сервер.
+- Настоящие медиапроцессы: `RUN_REAL_MEDIA_TESTS=1 python -m pytest -q tests/test_real_media.py`.
 - После документационных правок проверить относительные ссылки и `git diff --check`.
 
 ## Документация при каждой правке

@@ -29,7 +29,14 @@ FFmpeg **не скачивается во время `docker build`**. Обра�
 
 ## MKVToolNix
 
-Пакет `mkvtoolnix` (CLI `mkvmerge`) ставится в Dockerfile из официального репозитория **mkvtoolnix.download** (ключ Moritz Bunkus AS-IS в `/etc/apt/keyrings/`, suite **trixie** — как у `python:3.14-slim`), а не из зеркала Debian. Версия mkvmerge в контейнере — upstream, не дистро-пакет.
+Пакет `mkvtoolnix` (CLI `mkvmerge`) ставится в Dockerfile из официального репозитория **mkvtoolnix.download** (ключ Moritz Bunkus AS-IS в `/etc/apt/keyrings/`, suite **trixie** — как у `python:3.15.0-slim-trixie`), а не из зеркала Debian. Версия mkvmerge в контейнере — upstream, не дистро-пакет.
+
+## Релиз сборки 61
+
+`registry.mageek.su/al-web-video-encoder:build-61` содержит стандартный Python 3.15.0
+для `linux/amd64` и `linux/arm64`. Тег `latest` указывает на тот же multiarch manifest
+после проверки обеих платформ. Номер сборки хранится в `build_number.txt`,
+commit исходников — в OCI label `org.opencontainers.image.revision`.
 
 ## Сборка для разных платформ
 

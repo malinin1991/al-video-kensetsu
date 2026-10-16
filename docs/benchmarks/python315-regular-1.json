@@ -1,0 +1,211 @@
+{
+  "python": "3.15.0 (main, Oct 13 2026, 08:13:54) [GCC 14.2.0]",
+  "executable": "/opt/encoder315/bin/python",
+  "platform": "Linux-6.12.76-linuxkit-aarch64-with-glibc2.41",
+  "machine": "aarch64",
+  "cpu_count": 10,
+  "cpu_quota": "400000 100000",
+  "configure_args": "'--build=aarch64-linux-gnu' '--enable-loadable-sqlite-extensions' '--enable-optimizations' '--enable-option-checking=fatal' '--enable-shared' '--with-lto' '--without-system-libmpdec' '--with-ensurepip' 'build_alias=aarch64-linux-gnu'",
+  "free_threaded_build": false,
+  "gil_enabled_after_imports": true,
+  "jit_available": false,
+  "jit_enabled": false,
+  "yaml_c_extension": true,
+  "import_warnings": [],
+  "dependencies": {
+    "Flask": "3.1.3",
+    "Flask-SocketIO": "5.7.0",
+    "Flask-Cors": "6.0.5",
+    "python-socketio": "5.17.0",
+    "python-engineio": "4.14.0",
+    "Werkzeug": "3.1.9",
+    "psutil": "7.2.2",
+    "PyYAML": "6.0.3"
+  },
+  "import_seconds": 0.20282529201358557,
+  "jobs": 200,
+  "repeats": 5,
+  "api": [
+    {
+      "endpoint": "/api/jobs",
+      "workers": 1,
+      "requests_per_round": 200,
+      "requests_per_second": 623.1873194277414,
+      "p95_ms": 1.7595000099390745,
+      "rounds": [
+        {
+          "requests_per_second": 602.6337347847988,
+          "p95_ms": 2.0228750072419643,
+          "elapsed_seconds": 0.33187654201174155,
+          "cpu_seconds": 0.331840373
+        },
+        {
+          "requests_per_second": 623.1873194277414,
+          "p95_ms": 1.7595000099390745,
+          "elapsed_seconds": 0.32093079201877117,
+          "cpu_seconds": 0.3208955819999999
+        },
+        {
+          "requests_per_second": 625.8626792971363,
+          "p95_ms": 1.7593340016901493,
+          "elapsed_seconds": 0.3195589170209132,
+          "cpu_seconds": 0.319574123
+        },
+        {
+          "requests_per_second": 619.0622431858001,
+          "p95_ms": 1.7900419770739973,
+          "elapsed_seconds": 0.32306929101468995,
+          "cpu_seconds": 0.3229752499999998
+        },
+        {
+          "requests_per_second": 628.5317256771317,
+          "p95_ms": 1.6767500201240182,
+          "elapsed_seconds": 0.3182019169908017,
+          "cpu_seconds": 0.31817695599999984
+        }
+      ]
+    },
+    {
+      "endpoint": "/api/jobs",
+      "workers": 4,
+      "requests_per_round": 200,
+      "requests_per_second": 615.7574631778252,
+      "p95_ms": 28.20345899090171,
+      "rounds": [
+        {
+          "requests_per_second": 505.82584923842694,
+          "p95_ms": 34.8377909976989,
+          "elapsed_seconds": 0.395392999984324,
+          "cpu_seconds": 0.398508329
+        },
+        {
+          "requests_per_second": 615.7574631778252,
+          "p95_ms": 28.35483301896602,
+          "elapsed_seconds": 0.3248032089904882,
+          "cpu_seconds": 0.3255617530000001
+        },
+        {
+          "requests_per_second": 633.7302098439071,
+          "p95_ms": 22.570125001948327,
+          "elapsed_seconds": 0.3155917090480216,
+          "cpu_seconds": 0.31631737999999965
+        },
+        {
+          "requests_per_second": 626.7838857020541,
+          "p95_ms": 28.20345899090171,
+          "elapsed_seconds": 0.31908924999879673,
+          "cpu_seconds": 0.31965770800000026
+        },
+        {
+          "requests_per_second": 612.6819021126805,
+          "p95_ms": 22.620375035330653,
+          "elapsed_seconds": 0.3264336669817567,
+          "cpu_seconds": 0.32690024399999995
+        }
+      ]
+    },
+    {
+      "endpoint": "/api/internal/encode/requests/benchmark",
+      "workers": 1,
+      "requests_per_round": 200,
+      "requests_per_second": 4654.098660824249,
+      "p95_ms": 0.2312499564141035,
+      "rounds": [
+        {
+          "requests_per_second": 4713.067509052787,
+          "p95_ms": 0.225124997086823,
+          "elapsed_seconds": 0.04243520798627287,
+          "cpu_seconds": 0.04244641699999985
+        },
+        {
+          "requests_per_second": 4480.50002468923,
+          "p95_ms": 0.27550000231713057,
+          "elapsed_seconds": 0.04463787499116734,
+          "cpu_seconds": 0.04464187499999994
+        },
+        {
+          "requests_per_second": 4562.859053478808,
+          "p95_ms": 0.26237504789605737,
+          "elapsed_seconds": 0.04383216699352488,
+          "cpu_seconds": 0.04384462500000019
+        },
+        {
+          "requests_per_second": 4780.019553099882,
+          "p95_ms": 0.22595800692215562,
+          "elapsed_seconds": 0.041840833029709756,
+          "cpu_seconds": 0.0418441249999999
+        },
+        {
+          "requests_per_second": 4654.098660824249,
+          "p95_ms": 0.2312499564141035,
+          "elapsed_seconds": 0.042972875002305955,
+          "cpu_seconds": 0.04297354100000028
+        }
+      ]
+    },
+    {
+      "endpoint": "/api/internal/encode/requests/benchmark",
+      "workers": 4,
+      "requests_per_round": 200,
+      "requests_per_second": 3319.0200599409927,
+      "p95_ms": 1.82637496618554,
+      "rounds": [
+        {
+          "requests_per_second": 3319.0200599409927,
+          "p95_ms": 1.9818749860860407,
+          "elapsed_seconds": 0.06025874998886138,
+          "cpu_seconds": 0.07822164099999984
+        },
+        {
+          "requests_per_second": 3419.9872602513815,
+          "p95_ms": 1.821042038500309,
+          "elapsed_seconds": 0.05847975000506267,
+          "cpu_seconds": 0.07611027199999976
+        },
+        {
+          "requests_per_second": 3390.536832283995,
+          "p95_ms": 1.8810000037774444,
+          "elapsed_seconds": 0.05898770899511874,
+          "cpu_seconds": 0.07637144799999973
+        },
+        {
+          "requests_per_second": 3289.30689230723,
+          "p95_ms": 1.82637496618554,
+          "elapsed_seconds": 0.060803083004429936,
+          "cpu_seconds": 0.07860642799999962
+        },
+        {
+          "requests_per_second": 3221.6451255075767,
+          "p95_ms": 1.7592909862287343,
+          "elapsed_seconds": 0.06208008399698883,
+          "cpu_seconds": 0.08041965699999931
+        }
+      ]
+    }
+  ],
+  "hash": {
+    "size_mib": 64,
+    "file_cache": "warm",
+    "seconds": {
+      "legacy_4k": 0.03313754202099517,
+      "application": 0.029032499995082617
+    },
+    "rounds": {
+      "legacy_4k": [
+        0.03313754202099517,
+        0.03177370800403878,
+        0.03161758300848305,
+        0.04250329203205183,
+        0.03326574998209253
+      ],
+      "application": [
+        0.02957295801024884,
+        0.029032499995082617,
+        0.028399207978509367,
+        0.03117404197109863,
+        0.028491083008702844
+      ]
+    }
+  },
+  "peak_rss_mib": 57.6484375
+}

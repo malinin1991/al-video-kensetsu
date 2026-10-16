@@ -54,7 +54,7 @@
                         <button type="submit" class="btn btn-primary" id="saveSettingsBtn">
                             <i class="bi bi-check-lg"></i> Сохранить
                         </button>
-                        <span class="text-muted small" id="settingsStatus"></span>
+                        <span class="text-muted small" id="settingsStatus" role="status" aria-live="polite"></span>
                     </div>
                 </form>
             </div>
@@ -97,13 +97,16 @@
 
     form.addEventListener('submit', async function (event) {
         event.preventDefault();
-        const value = parseInt(input.value, 10);
-        if (Number.isNaN(value) || value < minVal || value > maxVal) {
+        const value = Number(input.value);
+        if (input.value.trim() === '' || !Number.isInteger(value) || value < minVal || value > maxVal || !input.checkValidity()) {
             input.classList.add('is-invalid');
+            input.setAttribute('aria-invalid', 'true');
             setStatus('Некорректное значение', true);
+            input.focus();
             return;
         }
         input.classList.remove('is-invalid');
+        input.removeAttribute('aria-invalid');
         saveBtn.disabled = true;
         setStatus('Сохранение…', false);
 

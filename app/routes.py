@@ -1,5 +1,6 @@
 from flask import (
     Blueprint,
+    current_app,
     after_this_request,
     render_template,
     request,
@@ -7,6 +8,7 @@ from flask import (
     send_file,
 )
 from werkzeug.utils import secure_filename
+from werkzeug.exceptions import RequestEntityTooLarge
 import hashlib
 import json
 import os
@@ -15,6 +17,7 @@ import tempfile
 import uuid
 import zipfile
 import re
+import threading
 from app.models.job import Job, JobStatus, utc_now
 from app.job_store import get_job_store
 from app.models.presets import (
@@ -71,6 +74,18 @@ main_bp = Blueprint('main', __name__)
 # Глобальные переменные для хранения данных
 jobs_storage = {}
 ffmpeg_worker = None
+# Фиксированный набор lock не растёт вместе с числом законченных загрузок.
+_chunk_upload_locks = tuple(threading.Lock() for _ in range(64))
+
+
+def _request_object_or_error():
+    """JSON настройки принимают только объект; form остаётся поддержан."""
+    if not request.is_json:
+        return {}, None
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return None, (jsonify({'error': 'Ожидается JSON объект'}), 400)
+    return payload, None
 
 def get_jobs_storage():
     global jobs_storage
@@ -182,7 +197,9 @@ def api_get_metadata_settings():
 @main_bp.route('/api/settings/metadata', methods=['PUT', 'POST'])
 def api_save_metadata_settings():
     """Сохраняет ник для переименования дорожек (персистентно на диске)."""
-    payload = request.get_json(silent=True) or {}
+    payload, error = _request_object_or_error()
+    if error is not None:
+        return error
     nickname = payload.get('metadata_nickname')
     if nickname is None:
         nickname = request.form.get('metadata_nickname', '')
@@ -226,7 +243,9 @@ def api_get_app_settings():
 @main_bp.route('/api/settings', methods=['PUT', 'POST'])
 def api_save_app_settings():
     """Сохраняет настройки приложения и применяет лимит к воркеру без рестарта."""
-    payload = request.get_json(silent=True) or {}
+    payload, error = _request_object_or_error()
+    if error is not None:
+        return error
     if 'max_concurrent_encodes' not in payload and 'max_concurrent_encodes' not in request.form:
         return jsonify({'error': 'Укажите max_concurrent_encodes'}), 400
 
@@ -295,13 +314,19 @@ def upload_file():
         total_chunks = request.form.get('total_chunks')
         file_id = request.form.get('file_id')
         
-        if chunk_number and total_chunks and file_id:
-            # Это чанк файла
+        if any(key in request.form for key in ('chunk_number', 'total_chunks', 'file_id')):
+            # Частично переданные/нечисловые метаданные — ошибка клиента.
+            try:
+                _validate_chunk_metadata(file_id, chunk_number, total_chunks)
+            except ValueError as exc:
+                return jsonify({'error': str(exc)}), 400
             return handle_chunk_upload(request, file_id, int(chunk_number), int(total_chunks))
         else:
             # Это полный файл (старый способ)
             return handle_full_file_upload(request)
     
+    except RequestEntityTooLarge:
+        return jsonify({'error': 'Превышен максимальный размер загрузки'}), 413
     except Exception as e:
         return jsonify({'error': f'Ошибка загрузки: {str(e)}'}), 500
 
@@ -383,6 +408,7 @@ def handle_full_file_upload(request):
             logger.upload_logger.info(f"Batch: загрузка файла {original_name}")
             unique_filename = f"{uuid.uuid4().hex}_{filename}"
             file_path = os.path.join(get_uploads_dir(), unique_filename)
+            ensure_directory_exists(get_uploads_dir())
             file.save(file_path)
             job, job_err = create_job_from_saved_file(
                 file_path, filename, ffmpeg_params, video_id,
@@ -402,96 +428,126 @@ def handle_full_file_upload(request):
 
     return _batch_encode_response(jobs, errors)
 
-def handle_chunk_upload(request, file_id, chunk_number, total_chunks):
-    """Обрабатывает загрузку чанка файла"""
+def _validate_chunk_metadata(file_id, chunk_number, total_chunks):
+    if not isinstance(file_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', file_id):
+        raise ValueError('file_id: 1–128 символов A–Z, a–z, 0–9, _, -')
     try:
+        number, total = int(chunk_number), int(total_chunks)
+    except (TypeError, ValueError):
+        raise ValueError('chunk_number и total_chunks должны быть целыми числами') from None
+    if not 1 <= total <= 100000 or not 0 <= number < total:
+        raise ValueError('Нужны 1 <= total_chunks <= 100000 и 0 <= chunk_number < total_chunks')
+
+
+def handle_chunk_upload(request, file_id, chunk_number, total_chunks):
+    """Записывает чанк атомарно; операции одного upload сериализованы."""
+    pending_path = None
+    try:
+        _validate_chunk_metadata(file_id, chunk_number, total_chunks)
         if 'file' not in request.files:
             return jsonify({'error': 'Чанк файла не найден'}), 400
-        
         file = request.files['file']
-        if file.filename == '':
+        if not file.filename:
             return jsonify({'error': 'Пустой чанк файла'}), 400
-        
-        # Создаем директорию для временных чанков
-        temp_dir = os.path.join(get_uploads_dir(), f'temp_{file_id}')
-        ensure_directory_exists(temp_dir)
-        
-        # Сохраняем чанк
-        chunk_filename = f'chunk_{chunk_number:04d}'
-        chunk_path = os.path.join(temp_dir, chunk_filename)
-        file.save(chunk_path)
-        
-        logger.upload_logger.info(f"Чанк {chunk_number}/{total_chunks} сохранен: {chunk_path}")
-        
-        # Проверяем, все ли чанки загружены
-        if chunk_number == total_chunks - 1:
-            # Последний чанк - собираем файл
-            return assemble_file_from_chunks(file_id, total_chunks, request)
-        else:
-            # Еще не все чанки загружены
+        filename = request.form.get('filename', '')
+        if not allowed_file(filename):
+            return jsonify({'error': 'Неподдерживаемый тип файла'}), 400
+        parsed, err = _ffmpeg_params_or_error(request)
+        if err is not None:
+            return err
+
+        with _chunk_upload_locks[hash(file_id) % len(_chunk_upload_locks)]:
+            temp_dir = os.path.join(get_uploads_dir(), f'temp_{file_id}')
+            ensure_directory_exists(temp_dir)
+            manifest_path = os.path.join(temp_dir, 'upload.json')
+            manifest = {'filename': filename, 'total_chunks': total_chunks}
+            if os.path.exists(manifest_path):
+                with open(manifest_path, encoding='utf-8') as handle:
+                    if json.load(handle) != manifest:
+                        return jsonify({'error': 'file_id уже используется для другой загрузки'}), 409
+            else:
+                with open(manifest_path, 'w', encoding='utf-8') as handle:
+                    json.dump(manifest, handle, ensure_ascii=False)
+
+            chunk_path = os.path.join(temp_dir, f'chunk_{chunk_number:04d}')
+            with tempfile.NamedTemporaryFile(dir=temp_dir, delete=False) as pending:
+                pending_path = pending.name
+            file.save(pending_path)
+            limit = current_app.config.get('MAX_CONTENT_LENGTH')
+            stored_size = sum(
+                entry.stat().st_size for entry in os.scandir(temp_dir)
+                if entry.name.startswith('chunk_') and entry.path != chunk_path
+            )
+            if limit is not None and stored_size + os.path.getsize(pending_path) > limit:
+                return jsonify({'error': 'Превышен максимальный размер файла'}), 413
+            os.replace(pending_path, chunk_path)
+            pending_path = None
+            logger.upload_logger.info(f'Чанк {chunk_number}/{total_chunks} сохранен: {chunk_path}')
+            if chunk_number == total_chunks - 1:
+                return assemble_file_from_chunks(file_id, total_chunks, request, parsed=parsed)
             return jsonify({
                 'message': f'Чанк {chunk_number + 1}/{total_chunks} загружен',
                 'progress': ((chunk_number + 1) / total_chunks) * 100,
-                'completed': False
+                'completed': False,
             })
-    
-    except Exception as e:
-        logger.upload_logger.error(f"Ошибка загрузки чанка {chunk_number}: {e}")
-        return jsonify({'error': f'Ошибка загрузки чанка: {str(e)}'}), 500
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    except RequestEntityTooLarge:
+        return jsonify({'error': 'Превышен максимальный размер загрузки'}), 413
+    except Exception as exc:
+        logger.upload_logger.error(f'Ошибка загрузки чанка {chunk_number}: {exc}')
+        return jsonify({'error': f'Ошибка загрузки чанка: {exc}'}), 500
+    finally:
+        if pending_path:
+            cleanup_file(pending_path)
 
-def assemble_file_from_chunks(file_id, total_chunks, request):
-    """Собирает файл из чанков"""
+
+def assemble_file_from_chunks(file_id, total_chunks, request, *, parsed=None):
+    """При ошибке сборки сохраняет чанки и удаляет неполный итоговый файл."""
+    final_path = None
     try:
         temp_dir = os.path.join(get_uploads_dir(), f'temp_{file_id}')
-        final_filename = request.form.get('filename', 'uploaded_file')
-        
-        # Создаем финальный файл (уникальное имя, не полагаемся на client file_id)
-        final_path = os.path.join(
-            get_uploads_dir(),
-            f"{uuid.uuid4().hex}_{create_secure_filename(final_filename)}",
-        )
-        
-        with open(final_path, 'wb') as final_file:
-            for i in range(total_chunks):
-                chunk_path = os.path.join(temp_dir, f'chunk_{i:04d}')
-                if os.path.exists(chunk_path):
-                    with open(chunk_path, 'rb') as chunk_file:
-                        shutil.copyfileobj(chunk_file, final_file, length=4 * 1024 * 1024)
-                    # Удаляем чанк после использования
-                    cleanup_file(chunk_path)
-                else:
-                    logger.upload_logger.error(f"Чанк {i} не найден: {chunk_path}")
-                    return jsonify({'error': f'Чанк {i} не найден'}), 400
-        
-        # Удаляем временную директорию
-        try:
-            os.rmdir(temp_dir)
-        except:
-            pass
-        
-        logger.upload_logger.info(f"Файл собран из {total_chunks} чанков: {final_path}")
-        
-        # Проверяем тип файла
+        final_filename = request.form.get('filename', '')
         if not allowed_file(final_filename):
-            cleanup_file(final_path)
             return jsonify({'error': 'Неподдерживаемый тип файла'}), 400
-        
-        # Получаем параметры FFmpeg
-        parsed, err = _ffmpeg_params_or_error(request)
-        if err is not None:
-            cleanup_file(final_path)
-            return err
-        ffmpeg_params, video_id, audio_id, audio_downmix = parsed
-        
-        # Обрабатываем одиночный видео файл
-        return process_single_video_file(
-            final_path, final_filename, ffmpeg_params, video_id,
-            audio_id, audio_downmix,
+        # В Job хранится имя, которое затем используется для output_path.
+        # Применяем тот же фильтр, что и к обычному multipart upload.
+        final_filename = create_secure_filename(final_filename)
+        if parsed is None:
+            parsed, err = _ffmpeg_params_or_error(request)
+            if err is not None:
+                return err
+        chunk_paths = [os.path.join(temp_dir, f'chunk_{i:04d}') for i in range(total_chunks)]
+        for index, chunk_path in enumerate(chunk_paths):
+            if not os.path.isfile(chunk_path):
+                return jsonify({'error': f'Чанк {index} не найден'}), 400
+
+        final_path = os.path.join(
+            get_uploads_dir(), f'{uuid.uuid4().hex}_{create_secure_filename(final_filename)}',
         )
-    
-    except Exception as e:
-        logger.upload_logger.error(f"Ошибка сборки файла из чанков: {e}")
-        return jsonify({'error': f'Ошибка сборки файла: {str(e)}'}), 500
+        with open(final_path, 'wb') as final_file:
+            for chunk_path in chunk_paths:
+                with open(chunk_path, 'rb') as chunk_file:
+                    shutil.copyfileobj(chunk_file, final_file, length=4 * 1024 * 1024)
+        ffmpeg_params, video_id, audio_id, audio_downmix = parsed
+        result = process_single_video_file(
+            final_path, final_filename, ffmpeg_params, video_id, audio_id, audio_downmix,
+        )
+        _response, status = _unwrap_flask_result(result)
+        if status < 400:
+            final_path = None  # исходник уже принадлежит заданию
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception as exc:
+                # Задание уже принято: ошибка уборки не должна запустить повтор.
+                logger.upload_logger.warning(f'Не удалось удалить чанки {temp_dir}: {exc}')
+        return result
+    except Exception as exc:
+        logger.upload_logger.error(f'Ошибка сборки файла из чанков: {exc}')
+        return jsonify({'error': f'Ошибка сборки файла: {exc}'}), 500
+    finally:
+        if final_path:
+            cleanup_file(final_path)
 
 def _form_optional(request, key: str) -> str | None:
     """Опциональное поле формы: нет ключа / пусто → None."""
@@ -540,6 +596,20 @@ def _get_form_ffmpeg_params(request):
     if audio_vbr is not None:
         params['audio_vbr'] = str(audio_vbr)
 
+    return params
+
+
+def _encoding_resource_params(source):
+    """Проверяет ресурсы до копирования исходника и создания задания."""
+    params = {}
+    for name, maximum in (('cpu_threads', 64), ('thread_queue_size', 8192), ('x265_pools', 32)):
+        raw = source.get(name, '0')
+        if isinstance(raw, bool) or not isinstance(raw, (str, int)):
+            raise ValueError(f'{name}: нужно целое число от 0 до {maximum}')
+        text = str(raw).strip()
+        if not re.fullmatch(r'[0-9]+', text) or not 0 <= int(text) <= maximum:
+            raise ValueError(f'{name}: нужно целое число от 0 до {maximum}')
+        params[name] = str(int(text))
     return params
 
 
@@ -619,11 +689,7 @@ def get_ffmpeg_params_from_request(request):
         params['audio_codec'] = 'libopus'
 
     params['audio_downmix'] = audio_downmix
-    params.update({
-        'cpu_threads': str(request.form.get('cpu_threads', '0')),
-        'thread_queue_size': str(request.form.get('thread_queue_size', '0')),
-        'x265_pools': str(request.form.get('x265_pools', '0'))
-    })
+    params.update(_encoding_resource_params(request.form))
     params.update(_get_metadata_params(request))
 
     return params, video_id, audio_id, audio_downmix
@@ -724,6 +790,7 @@ def process_single_video_file(
         audio_id, audio_downmix,
     )
     if err:
+        cleanup_job_original(file_path)
         return jsonify({'error': err}), 500
     return jsonify({
         'message': 'Файл загружен успешно',
@@ -740,12 +807,14 @@ def handle_single_video_upload(
     audio_downmix='none',
 ):
     """Обрабатывает загрузку одиночного видео файла"""
+    file_path = None
     try:
         logger.upload_logger.info(f"Обработка одиночного файла: {filename}")
         
         # Создаем уникальное имя файла
         unique_filename = f"{uuid.uuid4().hex}_{filename}"
         file_path = os.path.join(get_uploads_dir(), unique_filename)
+        ensure_directory_exists(get_uploads_dir())
         
         # Сохраняем файл
         file.save(file_path)
@@ -758,7 +827,13 @@ def handle_single_video_upload(
             audio_id, audio_downmix,
         )
     
+    except RequestEntityTooLarge:
+        if file_path:
+            cleanup_file(file_path)
+        return jsonify({'error': 'Превышен максимальный размер загрузки'}), 413
     except Exception as e:
+        if file_path:
+            cleanup_file(file_path)
         return jsonify({'error': f'Ошибка загрузки файла: {str(e)}'}), 500
 
 
@@ -797,11 +872,7 @@ def _ffmpeg_params_from_json(payload):
     if params.get('audio_codec') == 'opus':
         params['audio_codec'] = 'libopus'
 
-    params.update({
-        'cpu_threads': str(payload.get('cpu_threads', '0')),
-        'thread_queue_size': str(payload.get('thread_queue_size', '0')),
-        'x265_pools': str(payload.get('x265_pools', '0')),
-    })
+    params.update(_encoding_resource_params(payload))
 
     nickname_raw = payload.get('metadata_nickname')
     if nickname_raw is None:
@@ -1188,6 +1259,8 @@ def delete_job_by_id(job_id: str) -> dict:
     ffmpeg_worker = get_ffmpeg_worker_instance()
     stop_result = ffmpeg_worker.stop_job(job_id)
     logger.main_logger.info(f"Удаление задания {job_id}: {stop_result}")
+    if not stop_result.get('process_dead', True) or not stop_result.get('thread_stopped', True):
+        raise JobStillRunningError('Задание ещё останавливается; повторите удаление позднее')
 
     if job.original_path and is_internal_source_path(job.original_path):
         logger.main_logger.info(
@@ -1221,6 +1294,10 @@ def delete_job_by_id(job_id: str) -> dict:
         'message': 'Задание удалено успешно',
         'stop': stop_result,
     }
+
+
+class JobStillRunningError(RuntimeError):
+    """Очистка запрещена до подтверждённого завершения медиапроцесса/потока."""
 
 
 @main_bp.route('/api/jobs/delete', methods=['POST'])
@@ -1292,6 +1369,8 @@ def delete_job(job_id):
         return jsonify(result)
     except KeyError:
         return jsonify({'error': 'Задание не найдено'}), 404
+    except JobStillRunningError as exc:
+        return jsonify({'error': str(exc)}), 409
     except Exception as e:
         return jsonify({'error': f'Ошибка удаления: {str(e)}'}), 500
 
@@ -1308,6 +1387,11 @@ def stop_job(job_id):
     try:
         ffmpeg_worker = get_ffmpeg_worker_instance()
         stop_result = ffmpeg_worker.stop_job(job_id)
+        if not stop_result.get('process_dead', True) or not stop_result.get('thread_stopped', True):
+            return jsonify({'error': 'Задание ещё останавливается; повторите запрос позднее', 'stop': stop_result}), 409
+        # Финализация могла успеть завершиться одновременно с запросом отмены.
+        if job.status == JobStatus.DONE:
+            return jsonify({'message': 'Задание уже завершено', 'stop': stop_result})
         if job.output_path:
             cleanup_job_sidecars(job.output_path, job.id)
         update_job_status(job_id, JobStatus.CANCELLED, 'Отменено пользователем')
@@ -1540,7 +1624,8 @@ def system_info():
         import psutil
         import sys
         import time
-        from flask import __version__ as flask_version
+        from importlib.metadata import version
+        flask_version = version('flask')
         
         # Информация о процессоре
         cpu_count = multiprocessing.cpu_count()
@@ -1570,12 +1655,15 @@ def system_info():
         platform_name = platform.platform()
         
         # Время работы системы
-        boot_time = psutil.boot_time()
-        uptime_seconds = time.time() - boot_time
-        uptime = format_uptime(uptime_seconds)
+        system_status = 'ok'
+        try:
+            uptime = format_uptime(max(0, time.time() - psutil.boot_time()))
+        except (OSError, psutil.Error) as exc:
+            logger.main_logger.warning(f'Время работы системы недоступно: {exc}')
+            uptime = 'Недоступно'
+            system_status = 'warning'
         
         # Статус компонентов
-        system_status = 'ok'
         ffmpeg_status = 'ok' if check_ffmpeg() else 'error'
         ffmpeg_build = get_ffmpeg_build_info() if ffmpeg_status == 'ok' else {}
         ffmpeg_version = (

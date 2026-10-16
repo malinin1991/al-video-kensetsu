@@ -11,7 +11,7 @@ output_format: matroska
 
 # --- необязательно ---
 description: WEBRip / HDTV / BDRip — libx265 CRF 23 slow
-default: true
+default: false
 preset: slow
 crf: "23"
 pixel_format: yuv420p10le

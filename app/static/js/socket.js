@@ -1,28 +1,85 @@
-// Общее подключение к WebSocket
+let jobsPollingTimer = null;
+let fallbackRefreshInProgress = false;
+
+function getPollingFetchOptions() {
+    const options = { cache: 'no-store' };
+    if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+        options.signal = AbortSignal.timeout(10000);
+    }
+    return options;
+}
+
+function setConnectionStatus(state) {
+    const status = document.getElementById('connectionStatus');
+    if (!status) return;
+    const states = {
+        live: ['text-bg-success', 'Обновления подключены', 'Изменения заданий и логи поступают сразу'],
+        fallback: ['text-bg-warning', 'Обновление каждые 5 с', 'Резервный режим: задания и логи загружаются через HTTP'],
+        offline: ['text-bg-danger', 'Сервер недоступен', 'Показанные данные могут устареть. Проверяем соединение каждые 5 секунд'],
+    };
+    const [className, label, title] = states[state] || states.offline;
+    status.className = `badge ${className} ms-lg-3`;
+    status.textContent = label;
+    status.setAttribute('title', title);
+}
+
+async function refreshFallbackJobs() {
+    if (fallbackRefreshInProgress || window.socket?.connected || document.hidden) return;
+    fallbackRefreshInProgress = true;
+    try {
+        const loaded = await loadJobsOnConnect();
+        if (typeof window.refreshFallbackLogs === 'function') await window.refreshFallbackLogs();
+        if (!window.socket?.connected) setConnectionStatus(loaded ? 'fallback' : 'offline');
+    } catch (error) {
+        console.error('Ошибка резервного обновления:', error);
+        if (!window.socket?.connected) setConnectionStatus('offline');
+    } finally {
+        fallbackRefreshInProgress = false;
+    }
+}
+
+function startJobsPolling() {
+    if (jobsPollingTimer === null) {
+        jobsPollingTimer = setInterval(refreshFallbackJobs, 5000);
+    }
+}
+
+function stopJobsPolling() {
+    if (jobsPollingTimer !== null) clearInterval(jobsPollingTimer);
+    jobsPollingTimer = null;
+}
+
+// Первое чтение истории не зависит от установления Socket.IO соединения.
 document.addEventListener('DOMContentLoaded', function() {
     // Проверяем, находимся ли мы в режиме разработки
     window.isDevelopment = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
     
-    if (window.isDevelopment) {
-        console.log('Инициализация SocketIO...');
-    }
+    startJobsPolling();
+    refreshFallbackJobs();
+    if (typeof io !== 'function') return;
     
     // Настраиваем подключение Socket.IO с правильными параметрами
-    window.socket = io({
-        transports: ['polling', 'websocket'],
-        upgrade: true,
-        rememberUpgrade: true,
-        timeout: 20000,
-        forceNew: false,
-        autoConnect: true,
-        reconnection: true,
-        reconnectionDelay: 1000,
-        reconnectionAttempts: 5,
-        maxReconnectionAttempts: 5
-    });
+    try {
+        window.socket = io({
+            transports: ['polling', 'websocket'],
+            upgrade: true,
+            rememberUpgrade: true,
+            timeout: 20000,
+            forceNew: false,
+            autoConnect: true,
+            reconnection: true,
+            reconnectionDelay: 1000,
+            reconnectionAttempts: 5
+        });
+    } catch (error) {
+        console.error('Не удалось подключить обновления Socket.IO:', error);
+        return;
+    }
 
 // Обработчики подключения/отключения
 window.socket.on('connect', () => {
+    stopJobsPolling();
+    setConnectionStatus('live');
     if (window.isDevelopment) {
         console.log('WebSocket подключен');
         console.log('Socket ID:', window.socket.id);
@@ -30,9 +87,13 @@ window.socket.on('connect', () => {
     
     // Загружаем задания при подключении
     loadJobsOnConnect();
+    if (typeof window.refreshFallbackLogs === 'function') window.refreshFallbackLogs();
 });
 
 window.socket.on('disconnect', () => {
+    setConnectionStatus('fallback');
+    startJobsPolling();
+    refreshFallbackJobs();
     if (window.isDevelopment) {
         console.log('WebSocket отключен');
     }
@@ -40,6 +101,8 @@ window.socket.on('disconnect', () => {
 
 // Обработчик ошибок
 window.socket.on('connect_error', (error) => {
+    startJobsPolling();
+    refreshFallbackJobs();
     console.error('Ошибка подключения WebSocket:', error);
     console.error('Детали ошибки:', {
         type: error.type,
@@ -50,12 +113,12 @@ window.socket.on('connect_error', (error) => {
 });
 
 // Обработчик ошибок переподключения
-window.socket.on('reconnect_error', (error) => {
+window.socket.io.on('reconnect_error', (error) => {
     console.error('Ошибка переподключения WebSocket:', error);
 });
 
 // Обработчик успешного переподключения
-window.socket.on('reconnect', (attemptNumber) => {
+window.socket.io.on('reconnect', (attemptNumber) => {
     if (window.isDevelopment) {
         console.log('WebSocket переподключен после', attemptNumber, 'попыток');
     }
@@ -139,10 +202,14 @@ function removeCachedJob(jobId) {
 
 // Глобальные функции для обновления прогресса и заданий
 function updateJobProgressGlobally(jobId, progress) {
-    const clampedProgress = Math.max(0, Math.min(100, progress || 0));
+    const cached = window.jobsCache[jobId];
+    // Поздние progress-события не должны менять готовое/ошибочное задание.
+    if (cached && !['planned', 'in_progress'].includes(cached.status)) {
+        return;
+    }
+    const clampedProgress = Math.max(getJobProgress(cached), getJobProgress({ progress }));
 
-    if (window.jobsCache[jobId]) {
-        const cached = window.jobsCache[jobId];
+    if (cached) {
         cached.progress = clampedProgress;
         if (clampedProgress > 0 && cached.status === 'planned') {
             cached.status = 'in_progress';
@@ -160,8 +227,13 @@ function updateJobProgressGlobally(jobId, progress) {
             const progressText = progressContainer.querySelector('.progress-text');
             if (progressBar && progressText) {
                 const progressPercent = clampedProgress.toFixed(1);
+                const progressLabel = getJobProgressText({ status: 'in_progress', progress: clampedProgress });
                 progressBar.style.width = `${progressPercent}%`;
-                progressText.textContent = `${progressPercent}%`;
+                progressBar.setAttribute('aria-valuenow', progressPercent);
+                progressBar.setAttribute('aria-valuetext', progressLabel);
+                progressBar.classList.toggle('progress-bar-striped', clampedProgress >= 100);
+                progressBar.classList.toggle('progress-bar-animated', clampedProgress >= 100);
+                progressText.textContent = progressLabel;
             }
         } else if (clampedProgress > 0) {
             // Прогресс пришёл, а карточка ещё в состоянии «Ожидание» — перерисовать
@@ -175,8 +247,8 @@ function updateJobProgressGlobally(jobId, progress) {
     if (jobRow) {
         const progressCell = jobRow.querySelector('td.job-progress-cell');
         if (progressCell) {
-            const progressPercent = clampedProgress.toFixed(1);
-            progressCell.innerHTML = `<span class="text-primary fw-bold">${progressPercent}%</span>`;
+            const progressLabel = getJobProgressText({ status: 'in_progress', progress: clampedProgress });
+            progressCell.innerHTML = `<span class="text-primary fw-bold">${progressLabel}</span>`;
         }
     }
 }
@@ -245,26 +317,35 @@ function updateJobGlobally(job) {
 
 // Функция для загрузки заданий при подключении WebSocket
 function loadJobsOnConnect() {
+    const requests = [];
     // Загружаем задания на главной странице
     const jobsContainer = document.getElementById('jobsContainer');
     if (jobsContainer) {
-        loadJobsForContainer(jobsContainer);
+        requests.push(loadJobsForContainer(jobsContainer));
     }
     
     // Загружаем задания на странице логов
     const jobsTableBody = document.getElementById('jobsTableBody');
     if (jobsTableBody) {
-        loadJobsForTable(jobsTableBody);
+        requests.push(loadJobsForTable(jobsTableBody));
     }
+    // Страницы настроек/системы также должны показывать достоверный статус сервера.
+    if (requests.length === 0) {
+        requests.push(fetch('/health', getPollingFetchOptions()).then((response) => response.ok).catch(() => false));
+    }
+    return Promise.all(requests).then((results) => results.every(Boolean));
 }
 
 // Функция загрузки заданий для контейнера на главной странице
 function loadJobsForContainer(container) {
-    fetch('/api/jobs')
-        .then(response => response.json())
+    return fetch('/api/jobs', getPollingFetchOptions())
+        .then(response => {
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            return response.json();
+        })
         .then(jobs => {
             if (!Array.isArray(jobs)) {
-                return;
+                return false;
             }
 
             const apiJobIds = new Set(jobs.map(job => job.id));
@@ -296,19 +377,24 @@ function loadJobsForContainer(container) {
             if (typeof updateJobsSelectionUI === 'function') {
                 updateJobsSelectionUI();
             }
+            return true;
         })
         .catch(error => {
             console.error('Ошибка загрузки заданий:', error);
+            return false;
         });
 }
 
 // Функция загрузки заданий для таблицы на странице логов
 function loadJobsForTable(tableBody) {
-    fetch('/api/jobs')
-        .then(response => response.json())
+    return fetch('/api/jobs', getPollingFetchOptions())
+        .then(response => {
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            return response.json();
+        })
         .then(jobs => {
             if (!Array.isArray(jobs)) {
-                return;
+                return false;
             }
 
             const apiJobIds = new Set(jobs.map(job => job.id));
@@ -342,8 +428,10 @@ function loadJobsForTable(tableBody) {
             if (typeof updateJobsSelectionUI === 'function') {
                 updateJobsSelectionUI();
             }
+            return true;
         })
         .catch(error => {
             console.error('Ошибка загрузки заданий:', error);
+            return false;
         });
 }

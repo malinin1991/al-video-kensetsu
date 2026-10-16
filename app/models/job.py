@@ -1,9 +1,9 @@
 from dataclasses import asdict, dataclass
 from enum import Enum
 from datetime import datetime, timezone
-import hashlib
 import os
 import stat
+from app.file_utils import calculate_file_hash
 from .presets import (
     DEFAULT_AUDIO_ID,
     DEFAULT_VIDEO_ID,
@@ -80,11 +80,7 @@ class Job:
         if not os.path.exists(self.original_path):
             return None
         
-        hash_sha256 = hashlib.sha256()
-        with open(self.original_path, "rb") as f:
-            for chunk in iter(lambda: f.read(4096), b""):
-                hash_sha256.update(chunk)
-        return hash_sha256.hexdigest()
+        return calculate_file_hash(self.original_path)
     
     def verify_hash(self):
         """Проверяет целостность файла по хешу"""

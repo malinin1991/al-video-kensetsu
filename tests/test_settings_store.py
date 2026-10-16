@@ -76,6 +76,19 @@ class TestSettingsStore:
         assert data['metadata_nickname'] == 'Nick'
         assert data['max_concurrent_encodes'] == 2
 
+    @pytest.mark.parametrize('value', [True, False, 1.9, 2.0, '1.5', None, [], {}])
+    def test_max_concurrent_rejects_non_integer_without_overwriting(self, settings_file, value):
+        settings_store.save_settings({'max_concurrent_encodes': 3})
+        before = settings_file.read_bytes()
+        with pytest.raises(ValueError):
+            settings_store.save_settings({'max_concurrent_encodes': value})
+        assert settings_file.read_bytes() == before
+
+    @pytest.mark.parametrize('value', [1, 16, '2', ' 3 '])
+    def test_max_concurrent_accepts_integer_and_form_values(self, settings_file, value):
+        settings_store.save_settings({'max_concurrent_encodes': value})
+        assert settings_store.get_max_concurrent_encodes() == int(value)
+
     def test_legacy_logs_migration(self, tmp_path, monkeypatch):
         """Читает ник из старого /app/logs, если нового файла ещё нет."""
         new_path = tmp_path / 'settings' / 'app_settings.json'

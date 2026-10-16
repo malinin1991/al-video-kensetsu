@@ -1,0 +1,235 @@
+{
+  "python": "3.15.0 (main, Oct 13 2026, 08:13:54) [GCC 14.2.0]",
+  "executable": "/opt/encoder315/bin/python",
+  "platform": "Linux-6.12.76-linuxkit-aarch64-with-glibc2.41",
+  "machine": "aarch64",
+  "cpu_count": 10,
+  "cpu_quota": "400000 100000",
+  "configure_args": "'--build=aarch64-linux-gnu' '--enable-loadable-sqlite-extensions' '--enable-optimizations' '--enable-option-checking=fatal' '--enable-shared' '--with-lto' '--without-system-libmpdec' '--with-ensurepip' 'build_alias=aarch64-linux-gnu'",
+  "free_threaded_build": false,
+  "gil_enabled_after_imports": true,
+  "jit_available": false,
+  "jit_enabled": false,
+  "yaml_c_extension": true,
+  "import_warnings": [],
+  "dependencies": {
+    "Flask": "3.1.3",
+    "Flask-SocketIO": "5.7.0",
+    "Flask-Cors": "6.0.5",
+    "python-socketio": "5.17.0",
+    "python-engineio": "4.14.0",
+    "Werkzeug": "3.1.9",
+    "psutil": "7.2.2",
+    "PyYAML": "6.0.3"
+  },
+  "import_seconds": 0.223230000003241,
+  "jobs": 200,
+  "repeats": 5,
+  "api": [
+    {
+      "endpoint": "/api/jobs",
+      "workers": 1,
+      "requests_per_round": 200,
+      "requests_per_second": 608.053747258241,
+      "p95_ms": 1.9355830154381692,
+      "rounds": [
+        {
+          "requests_per_second": 605.3428327108361,
+          "p95_ms": 2.1608329843729734,
+          "elapsed_seconds": 0.33039129100507125,
+          "cpu_seconds": 0.33031029000000006
+        },
+        {
+          "requests_per_second": 585.3865552348955,
+          "p95_ms": 2.134124981239438,
+          "elapsed_seconds": 0.34165458398638293,
+          "cpu_seconds": 0.341632874
+        },
+        {
+          "requests_per_second": 617.0687384645116,
+          "p95_ms": 1.9071249989792705,
+          "elapsed_seconds": 0.3241129999514669,
+          "cpu_seconds": 0.3241018739999999
+        },
+        {
+          "requests_per_second": 620.8154766767803,
+          "p95_ms": 1.8338339868932962,
+          "elapsed_seconds": 0.3221569170127623,
+          "cpu_seconds": 0.322109124
+        },
+        {
+          "requests_per_second": 608.053747258241,
+          "p95_ms": 1.9355830154381692,
+          "elapsed_seconds": 0.3289182920125313,
+          "cpu_seconds": 0.3288477489999999
+        }
+      ]
+    },
+    {
+      "endpoint": "/api/jobs",
+      "workers": 4,
+      "requests_per_round": 200,
+      "requests_per_second": 642.4810025886927,
+      "p95_ms": 29.36633297940716,
+      "rounds": [
+        {
+          "requests_per_second": 637.9996576533872,
+          "p95_ms": 29.48754100361839,
+          "elapsed_seconds": 0.31347979203565046,
+          "cpu_seconds": 0.31408904000000004
+        },
+        {
+          "requests_per_second": 645.3804073570195,
+          "p95_ms": 29.026708041783422,
+          "elapsed_seconds": 0.3098947500111535,
+          "cpu_seconds": 0.310391836
+        },
+        {
+          "requests_per_second": 643.3741091276131,
+          "p95_ms": 30.233875033445656,
+          "elapsed_seconds": 0.3108611259958707,
+          "cpu_seconds": 0.31139853800000017
+        },
+        {
+          "requests_per_second": 638.358906851601,
+          "p95_ms": 28.648000035900623,
+          "elapsed_seconds": 0.31330337503459305,
+          "cpu_seconds": 0.3140076230000002
+        },
+        {
+          "requests_per_second": 642.4810025886927,
+          "p95_ms": 29.36633297940716,
+          "elapsed_seconds": 0.3112932509975508,
+          "cpu_seconds": 0.31173045900000007
+        }
+      ]
+    },
+    {
+      "endpoint": "/api/internal/encode/requests/benchmark",
+      "workers": 1,
+      "requests_per_round": 200,
+      "requests_per_second": 4910.2298285011575,
+      "p95_ms": 0.21783402189612389,
+      "rounds": [
+        {
+          "requests_per_second": 4842.7567827842395,
+          "p95_ms": 0.2181250019930303,
+          "elapsed_seconds": 0.041298790951259434,
+          "cpu_seconds": 0.04130995799999981
+        },
+        {
+          "requests_per_second": 4910.2298285011575,
+          "p95_ms": 0.2115000388585031,
+          "elapsed_seconds": 0.040731290995609015,
+          "cpu_seconds": 0.040742459000000064
+        },
+        {
+          "requests_per_second": 4910.571378485342,
+          "p95_ms": 0.21791603649035096,
+          "elapsed_seconds": 0.040728457970544696,
+          "cpu_seconds": 0.04073887400000009
+        },
+        {
+          "requests_per_second": 4922.688074750057,
+          "p95_ms": 0.2162089804187417,
+          "elapsed_seconds": 0.040628209011629224,
+          "cpu_seconds": 0.04063870799999991
+        },
+        {
+          "requests_per_second": 4863.483005034336,
+          "p95_ms": 0.21783402189612389,
+          "elapsed_seconds": 0.0411227919976227,
+          "cpu_seconds": 0.041133207999999755
+        }
+      ]
+    },
+    {
+      "endpoint": "/api/internal/encode/requests/benchmark",
+      "workers": 4,
+      "requests_per_round": 200,
+      "requests_per_second": 3261.8246222741777,
+      "p95_ms": 1.9488749676384032,
+      "rounds": [
+        {
+          "requests_per_second": 2927.239796224835,
+          "p95_ms": 2.202874980866909,
+          "elapsed_seconds": 0.06832374999066815,
+          "cpu_seconds": 0.08817684999999997
+        },
+        {
+          "requests_per_second": 3200.463019242391,
+          "p95_ms": 1.9666249863803387,
+          "elapsed_seconds": 0.06249095796374604,
+          "cpu_seconds": 0.08103920899999961
+        },
+        {
+          "requests_per_second": 3284.7419271804874,
+          "p95_ms": 1.7361250356771052,
+          "elapsed_seconds": 0.06088758399710059,
+          "cpu_seconds": 0.07904892200000013
+        },
+        {
+          "requests_per_second": 3287.0836285425094,
+          "p95_ms": 1.763499982189387,
+          "elapsed_seconds": 0.06084420799743384,
+          "cpu_seconds": 0.07899695899999992
+        },
+        {
+          "requests_per_second": 3261.8246222741777,
+          "p95_ms": 1.9488749676384032,
+          "elapsed_seconds": 0.061315375030972064,
+          "cpu_seconds": 0.079445357
+        }
+      ]
+    }
+  ],
+  "hash": {
+    "size_mib": 64,
+    "file_cache": "warm",
+    "seconds": {
+      "legacy_4k": 0.031897832988761365,
+      "application": 0.029432500014081597
+    },
+    "rounds": {
+      "legacy_4k": [
+        0.031897832988761365,
+        0.031754458032082766,
+        0.03162820800207555,
+        0.03358754102373496,
+        0.033407374983653426
+      ],
+      "application": [
+        0.029432500014081597,
+        0.02869687502970919,
+        0.028967165970243514,
+        0.03609108296222985,
+        0.030077499977778643
+      ]
+    }
+  },
+  "yaml_parse": {
+    "documents_per_round": 500,
+    "fixture": "hevc_auto_level_rip.yaml",
+    "seconds": {
+      "safe_python": 0.16401883400976658,
+      "application_safe_loader": 0.015366417006589472
+    },
+    "rounds": {
+      "safe_python": [
+        0.16401883400976658,
+        0.17090874997666106,
+        0.166999000008218,
+        0.16192754195071757,
+        0.16268858400871977
+      ],
+      "application_safe_loader": [
+        0.015318957972340286,
+        0.015366417006589472,
+        0.015657874988391995,
+        0.015107584011275321,
+        0.015497416956350207
+      ]
+    }
+  },
+  "peak_rss_mib": 57.60546875
+}

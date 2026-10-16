@@ -82,9 +82,9 @@ class TestPresetsApi:
         audio_ids = {a['id'] for a in data['audios']}
         assert video_ids == {'hevc_rip', 'hevc_remux', 'hevc_auto_level_rip'}
         assert audio_ids == {'copy', 'opus', 'aac', 'aac_fdk', 'none'}
-        assert data['defaults']['video_id'] == 'hevc_rip'
+        assert data['defaults']['video_id'] == 'hevc_auto_level_rip'
         assert data['defaults']['audio_id'] == 'copy'
-        assert data['videos'][0]['id'] == 'hevc_rip'
+        assert data['videos'][0]['id'] == 'hevc_auto_level_rip'
         assert data['videos'][0]['default'] is True
         for a in data['audios']:
             assert 'available' in a
@@ -243,7 +243,7 @@ class TestBatchUpload:
         assert response.status_code == 200
         body = response.get_json()
         assert body['created'] == 2
-        assert body['jobs'][0]['video_id'] == 'hevc_rip'
+        assert body['jobs'][0]['video_id'] == 'hevc_auto_level_rip'
         assert body['jobs'][0]['audio_id'] == 'copy'
 
     def test_batch_partial_207(self, client):

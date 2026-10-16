@@ -1,14 +1,11 @@
-from flask import Flask
+from flask import Flask, request
 from flask_socketio import SocketIO
 import importlib.util
 import logging
 import os
 import sys
-import threading
-import time
 from app.routes import main_bp
 from app.ffmpeg_worker import FFmpegWorker
-from app.models.job import Job, JobStatus
 
 _log = logging.getLogger(__name__)
 
@@ -23,7 +20,9 @@ cors_origins = [
     origin.strip()
     for origin in os.getenv(
         'CORS_ORIGINS',
-        'http://localhost:3000,http://127.0.0.1:3000,http://172.18.0.1:3000,http://pc13.local:3000'
+        'http://localhost:3000,http://127.0.0.1:3000,'
+        'http://localhost:5000,http://127.0.0.1:5000,'
+        'http://172.18.0.1:3000,http://pc13.local:3000'
     ).split(',')
     if origin.strip()
 ]
@@ -73,18 +72,8 @@ socketio = SocketIO(app,
                    ping_timeout=60,
                    ping_interval=25)
 
-# Создаем директории для данных (в Docker — /app/*; локально может быть read-only)
-for _data_dir in (
-    '/app/uploads',
-    '/app/outputs',
-    '/app/logs',
-    '/app/settings',
-    '/app/data',
-):
-    try:
-        os.makedirs(_data_dir, exist_ok=True)
-    except OSError:
-        pass
+# Каталоги данных создают их владельцы по фактическим путям из env:
+# uploads при загрузке, outputs перед encode, logger/store/settings при записи.
 
 # Создаем воркер для FFmpeg
 def progress_callback(job_id, progress):
@@ -151,11 +140,12 @@ def health_check():
 @socketio.on('connect')
 def handle_connect():
     """Обработчик подключения WebSocket"""
-    # Отправляем текущее состояние всех заданий
+    # Начальную историю получает только новое соединение. Изменения заданий
+    # по-прежнему рассылаются всем клиентам через callbacks.
     from app.routes import get_all_jobs
     jobs = get_all_jobs()
     for job in jobs:
-        socketio.emit('job_update', job.to_dict())
+        socketio.emit('job_update', job.to_dict(), to=request.sid)
 
 @socketio.on('disconnect')
 def handle_disconnect():

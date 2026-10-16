@@ -1,6 +1,6 @@
 # Система пакетного кодирования видео
 
-Веб-система для пакетного кодирования видео с использованием Python 3.14, Flask, Bootstrap, Docker и FFmpeg.
+Веб-система для пакетного кодирования видео с использованием Python 3.15, Flask, Bootstrap, Docker и FFmpeg.
 
 ## Возможности
 
@@ -15,7 +15,7 @@
 
 ## Технологии
 
-- **Backend**: Python 3.14, Flask, Flask-SocketIO
+- **Backend**: Python 3.15, Flask, Flask-SocketIO
 - **Frontend**: Bootstrap 5, JavaScript, WebSocket
 - **Кодирование**: FFmpeg с поддержкой H.265/HEVC
 - **Конфигурация**: YAML пресеты для удобного управления настройками
@@ -113,16 +113,26 @@ docker compose -f docker-compose.windows.yml up --build
 ### 4. Альтернативный запуск (без Docker)
 
 ```bash
+# Окружение Python 3.15
+python3.15 -m venv .venv
+source .venv/bin/activate
+
 # Установка зависимостей
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 
 # Запуск сервера (после подготовки бинарников и каталогов данных)
 python run.py
 ```
 
 Локальный сервер слушает порт **5000**. Для обработки файлов нужны FFmpeg,
-ffprobe и MKVToolNix, а также доступ на запись в `/app/outputs`.
+ffprobe и MKVToolNix. Для результатов можно задать доступный `OUTPUTS_DIR`
+(по умолчанию `/app/outputs`).
 Подготовка локального окружения и ограничения описаны в [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+
+Основной runtime — обычный Python **3.15.0**. Free-threaded 3.15t также проверен;
+для локального использования выбран стандартный вариант с меньшим расходом памяти
+и более быстрым обслуживанием одного клиента. Методика и цифры сравнения —
+в [разделе разработки](docs/DEVELOPMENT.md#сравнение-315--315t).
 
 ## Использование
 
@@ -135,16 +145,23 @@ ffprobe и MKVToolNix, а также доступ на запись в `/app/out
 3. Настройте параметры кодирования FFmpeg
 4. Нажмите «Загрузить» для файлов или «Кодировать» для хранилища
 
+Параметры фиксируются при начале отправки и одинаковы для всей выбранной пачки.
+При частичном успехе интерфейс показывает число принятых файлов и причины ошибок;
+в выборе для повтора остаются только непринятые файлы. На 100% кодирования может
+ещё идти финализация MKV: скачивание появляется после готовности итогового файла.
+
 ### Система пресетов
 
 Видео и аудио выбираются независимо:
 
-- **Видео**: `hevc_rip` (по умолчанию), `hevc_auto_level_rip`, `hevc_remux`
+- **Видео**: `hevc_auto_level_rip` (HEVC rip auto level, по умолчанию), `hevc_rip`, `hevc_remux`
 - **Аудио**: `copy` (по умолчанию), `opus` (160k VBR), `aac` (192k), `aac_fdk` (192k), `none`
 - **Субтитры и данные**: внутренние слои `copy` / `none`; при аудио `none` также отключаются
 
 `hevc_remux` — пресет перекодирования через libx265. Сборкой контейнера после
 кодирования управляет отдельный модуль `mkvmerge_remux.py`.
+У `hevc_auto_level_rip` x265 сам выбирает level/ref: параметры `level=5.1:ref=6`
+не передаются. Этот default применяется и в UI, и при пропущенном `video_id` в API.
 
 ### Параметры кодирования
 
@@ -207,7 +224,7 @@ ffprobe и MKVToolNix, а также доступ на запись в `/app/out
 
 | Слой | ids | UI |
 |------|-----|----|
-| video | `hevc_rip` (default), `hevc_auto_level_rip`, `hevc_remux` | да |
+| video | `hevc_auto_level_rip` (default), `hevc_rip`, `hevc_remux` | да |
 | audio | `copy` (default), `opus`, `aac`, `aac_fdk`, `none` | да |
 | subtitles | `copy` (default), `none` | нет |
 | data | `copy` (default), `none` | нет |
@@ -223,6 +240,10 @@ ffprobe и MKVToolNix, а также доступ на запись в `/app/out
 - `progress_update` - Обновление прогресса
 - `log_update` - Новые логи
 
+Клиент Socket.IO поставляется с приложением. Статус подключения виден в навигации;
+при потере соединения задания и логи обновляются через HTTP каждые 5 секунд
+(когда вкладка видима). История загружается сразу, без ожидания live-подключения.
+
 ## Создание собственных пресетов
 
 ### Добавление video / audio пресета
@@ -236,16 +257,15 @@ Subtitles/data правятся в `presets/subtitles/` и `presets/data/` (в U
 ### Пример video-пресета
 
 ```yaml
-id: hevc_rip
-name: HEVC rip
-description: WEBRip / HDTV / BDRip — libx265 CRF 23 slow
+id: hevc_auto_level_rip
+name: HEVC rip auto level
+description: WEBRip / HDTV / BDRip — libx265 auto level CRF 23 slow
 default: true
 
 video_codec: libx265
 preset: slow
 crf: "23"
 pixel_format: yuv420p10le
-x265_params: level=5.1:ref=6
 tune: animation
 output_format: matroska
 video_map: 0:v:0
@@ -278,6 +298,7 @@ audio_map: 0:a?
 
 - `FLASK_ENV` - Режим Flask (development/production)
 - `PYTHONPATH` - Путь к модулям Python
+- `UPLOADS_DIR` / `OUTPUTS_DIR` - Каталоги исходников/результатов (default `/app/uploads` / `/app/outputs`)
 - `CORS_ORIGINS` - Разрешённые origins для CORS / Socket.IO (через запятую)
 - `SOCKETIO_ASYNC_MODE` - Режим Flask-SocketIO (`threading` по умолчанию; без eventlet)
 - `FFMPEG_DIR` - Каталог FFmpeg (по умолчанию `/app/ffmpeg`; бинарники в `$FFMPEG_DIR/bin`)

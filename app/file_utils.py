@@ -8,6 +8,11 @@ ALLOWED_EXTENSIONS = {'.mp4', '.mkv'}
 ALLOWED_MIME_TYPES = {'video/mp4', 'video/x-matroska'}
 
 
+def get_outputs_dir() -> str:
+    """Каталог итоговых файлов; Docker default сохраняется для старых установок."""
+    return os.path.abspath(os.environ.get('OUTPUTS_DIR') or '/app/outputs')
+
+
 def allowed_file(filename: str) -> bool:
     """Проверяет, разрешен ли тип файла"""
     if not filename:
@@ -24,12 +29,9 @@ def allowed_file(filename: str) -> bool:
 
 
 def calculate_file_hash(file_path: str) -> str:
-    """Вычисляет SHA256 хеш файла"""
-    hash_sha256 = hashlib.sha256()
+    """SHA256 регулярного файла без мелких Python-итераций и лишних bytes."""
     with open(file_path, "rb") as f:
-        for chunk in iter(lambda: f.read(4096), b""):
-            hash_sha256.update(chunk)
-    return hash_sha256.hexdigest()
+        return hashlib.file_digest(f, 'sha256').hexdigest()
 
 
 def get_file_size(file_path: str) -> int:

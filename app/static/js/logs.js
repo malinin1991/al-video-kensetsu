@@ -136,7 +136,6 @@ function initializeLogsPage() {
 
     function setupSocketHandlers() {
         if (!window.socket) {
-            setTimeout(setupSocketHandlers, 100);
             return;
         }
 
@@ -218,7 +217,8 @@ function initializeLogsPage() {
     }
 
     function loadExistingLogs() {
-        fetch(getLogsApiUrl())
+        const requestedUrl = getLogsApiUrl();
+        return fetch(requestedUrl, getPollingFetchOptions())
             .then(response => {
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
@@ -226,6 +226,7 @@ function initializeLogsPage() {
                 return response.json();
             })
             .then(existingLogs => {
+                if (requestedUrl !== getLogsApiUrl() || isPaused) return;
                 logs = [];
                 existingLogs.forEach(logData => {
                     addLogEntry(
@@ -371,6 +372,8 @@ function initializeLogsPage() {
         }
         return loadJobLogOptions();
     };
+
+    window.refreshFallbackLogs = () => isPaused ? Promise.resolve() : loadExistingLogs();
 }
 
 document.addEventListener('DOMContentLoaded', initializeLogsPage);

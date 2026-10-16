@@ -1,6 +1,9 @@
 # Makefile для системы кодирования видео
 
-.PHONY: help build up down logs clean test dev prod registry-push registry-pull
+.PHONY: help build up down logs clean test test-python test-js test-server dev prod registry-push registry-pull
+
+PYTHON ?= python3
+NODE ?= node
 
 # Цвета для вывода
 GREEN=\033[0;32m
@@ -56,10 +59,16 @@ clean: ## Очистить систему
 	docker system prune -f
 	@echo "$(GREEN)Система очищена!$(NC)"
 
-test: ## Запустить тесты
-	@echo "$(YELLOW)Запуск тестов...$(NC)"
+test: test-python test-js ## Запустить Python и JavaScript тесты
+
+test-python: ## Запустить pytest без Docker и медиапроцессов
+	$(PYTHON) -m pytest -q tests
+
+test-js: ## Запустить JavaScript тесты (Node.js 22+)
+	$(NODE) --test tests/js/*.test.cjs
+
+test-server: ## Поднять отдельный сервер для ручной проверки (порт 5001)
 	docker-compose -f docker-compose.test.yml up --build
-	@echo "$(GREEN)Тесты завершены!$(NC)"
 
 dev: ## Запустить в режиме разработки
 	@echo "$(YELLOW)Запуск в режиме разработки...$(NC)"

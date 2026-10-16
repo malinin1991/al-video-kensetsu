@@ -52,9 +52,9 @@ function formatTime(value) {
 
 // Функция экранирования HTML
 function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
+    return String(text ?? '').replace(/[&<>"']/g, (character) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    })[character]);
 }
 
 const _ALERT_TYPES = new Set([
@@ -96,6 +96,8 @@ function showAlert(type, message) {
     alertDiv.appendChild(closeBtn);
 
     getToastContainer().appendChild(alertDiv);
+
+    if (safeType === 'danger' || safeType === 'warning') return;
 
     setTimeout(() => {
         if (!alertDiv.parentNode) {
@@ -196,10 +198,15 @@ function showConfirm(options) {
 
 /** Bootstrap-тултипы сверху для кнопок действий с заданиями. */
 function initActionTooltips(root) {
+    const scope = root || document;
+    scope.querySelectorAll('button[title]').forEach((element) => {
+        if (!element.hasAttribute('aria-label')) {
+            element.setAttribute('aria-label', element.getAttribute('title'));
+        }
+    });
     if (typeof bootstrap === 'undefined' || !bootstrap.Tooltip) {
         return;
     }
-    const scope = root || document;
     const triggers = scope.querySelectorAll(
         '.btn-delete[title], .btn-download[title], .btn-warning[title]'
     );
@@ -293,7 +300,9 @@ function updateJobsSelectionUI() {
     const downloadBtn = document.getElementById('downloadSelectedJobsBtn');
     const deleteBtn = document.getElementById('deleteSelectedJobsBtn');
     if (downloadBtn) {
-        downloadBtn.disabled = selectedCount < 1;
+        downloadBtn.disabled = !Array.from(window.selectedJobIds).some((id) =>
+            isJobDownloadable(window.jobsCache && window.jobsCache[id])
+        );
     }
     if (deleteBtn) {
         deleteBtn.disabled = selectedCount < 1;
@@ -413,6 +422,21 @@ function getPresetDisplayName(job) {
     return label;
 }
 
+function isJobDownloadable(job) {
+    return !!job && job.status === 'done' && job.output_available !== false;
+}
+
+function getJobProgress(job) {
+    const progress = Number(job && job.progress);
+    return Number.isFinite(progress) ? Math.max(0, Math.min(100, progress)) : 0;
+}
+
+function getJobProgressText(job) {
+    return job.status === 'in_progress' && getJobProgress(job) >= 100
+        ? 'Финализация…'
+        : `${getJobProgress(job).toFixed(1)}%`;
+}
+
 // Функция создания элемента задания (для главной страницы)
 function createJobElement(job) {
     const statusClass = `status-${job.status}`;
@@ -423,11 +447,11 @@ function createJobElement(job) {
     
     let progressHtml = '';
     if (job.status === 'in_progress') {
-        const progressPercent = (job.progress || 0).toFixed(1);
+        const progressPercent = getJobProgress(job).toFixed(1);
         progressHtml = `
             <div class="job-progress">
-                <div class="progress-bar" style="width: ${progressPercent}%"></div>
-                <div class="progress-text">${progressPercent}%</div>
+                <div class="progress-bar${getJobProgress(job) >= 100 ? ' progress-bar-striped progress-bar-animated' : ''}" role="progressbar" aria-label="Прогресс кодирования" aria-valuenow="${progressPercent}" aria-valuemin="0" aria-valuemax="100" aria-valuetext="${getJobProgressText(job)}" style="width: ${progressPercent}%"></div>
+                <div class="progress-text">${getJobProgressText(job)}</div>
             </div>
             <div class="text-muted small mt-1">
                 <i class="bi bi-gear"></i> Пресет: ${escapeHtml(presetName)}
@@ -442,6 +466,7 @@ function createJobElement(job) {
             <div class="text-muted small mt-1">
                 <i class="bi bi-gear"></i> Пресет: ${escapeHtml(presetName)}
             </div>
+            ${job.output_available === false ? '<div class="text-warning small mt-1">Готовый файл отсутствует на диске</div>' : ''}
         `;
     } else if (job.status === 'error') {
         progressHtml = '<span class="text-danger">Ошибка</span>';
@@ -460,7 +485,7 @@ function createJobElement(job) {
     let actionsHtml = '';
     if (job.status === 'done') {
         actionsHtml = `
-            <button class="btn btn-download btn-sm me-1" onclick="downloadJob('${job.id}')" title="Скачать">
+            <button class="btn btn-download btn-sm me-1" onclick="downloadJob('${job.id}')" ${isJobDownloadable(job) ? '' : 'disabled'} title="${isJobDownloadable(job) ? 'Скачать' : 'Готовый файл отсутствует на диске'}">
                 <i class="bi bi-download"></i>
             </button>
             <button class="btn btn-delete btn-sm" onclick="deleteJob('${job.id}')" title="Удалить">
@@ -495,16 +520,16 @@ function createJobElement(job) {
     jobDiv.setAttribute('data-job-id', job.id);
     jobDiv.innerHTML = `
         <div class="card-body">
-            <div class="d-flex justify-content-between align-items-start">
+            <div class="d-flex justify-content-between align-items-start job-card-heading">
                 <div class="d-flex align-items-start flex-grow-1 me-2" style="min-width: 0;">
                     ${jobCheckboxHtml(job.id)}
                     <div class="flex-grow-1" style="min-width: 0;">
-                        <h6 class="card-title text-truncate" title="${escapeHtml(job.filename)}">${escapeHtml(job.filename)}</h6>
+                        <h6 class="card-title" title="${escapeHtml(job.filename)}">${escapeHtml(job.filename)}</h6>
                         <span class="badge ${statusClass}">${statusText}</span>
                         ${job.error_message ? `<div class="text-danger small mt-1">${escapeHtml(job.error_message)}</div>` : ''}
                     </div>
                 </div>
-                <div class="flex-shrink-0 d-flex gap-1">
+                <div class="flex-shrink-0 d-flex gap-1 job-card-actions">
                     ${actionsHtml}
                 </div>
             </div>
@@ -525,11 +550,11 @@ function createJobRow(job) {
     
     let progressHtml = '';
     if (job.status === 'in_progress') {
-        const clampedProgress = Math.max(0, Math.min(100, job.progress || 0));
-        const progressPercent = clampedProgress.toFixed(1);
-        progressHtml = `<span class="text-primary fw-bold">${progressPercent}%</span>`;
+        progressHtml = `<span class="text-primary fw-bold">${getJobProgressText(job)}</span>`;
     } else if (job.status === 'done') {
-        progressHtml = '<span class="text-success fw-bold">100.0%</span>';
+        progressHtml = job.output_available === false
+            ? '<span class="text-warning">Файл отсутствует</span>'
+            : '<span class="text-success fw-bold">100.0%</span>';
     } else if (job.status === 'error') {
         progressHtml = '<span class="text-danger">Ошибка</span>';
     } else if (job.status === 'cancelled') {
@@ -541,7 +566,7 @@ function createJobRow(job) {
     let actionsHtml = '';
     if (job.status === 'done') {
         actionsHtml = `
-            <button class="btn btn-download btn-sm me-1" onclick="downloadJob('${job.id}')" title="Скачать">
+            <button class="btn btn-download btn-sm me-1" onclick="downloadJob('${job.id}')" ${isJobDownloadable(job) ? '' : 'disabled'} title="${isJobDownloadable(job) ? 'Скачать' : 'Готовый файл отсутствует на диске'}">
                 <i class="bi bi-download"></i>
             </button>
             <button class="btn btn-delete btn-sm" onclick="deleteJob('${job.id}')" title="Удалить">
@@ -602,7 +627,7 @@ async function downloadSelectedJobs() {
     const downloadIds = [];
     selectedIds.forEach((jobId) => {
         const job = window.jobsCache && window.jobsCache[jobId];
-        if (job && job.status === 'done') {
+        if (isJobDownloadable(job)) {
             downloadIds.push(jobId);
         } else {
             skipped.push(jobId);

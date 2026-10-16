@@ -11,6 +11,8 @@
 **Auth:** сейчас нет. Доступ открытый в пределах сети, где слушает сервис.
 
 **CORS:** переменная `CORS_ORIGINS` (через запятую) влияет на CORS / Socket.IO.
+Default включает localhost/127.0.0.1 на портах 3000 (Compose) и 5000 (`run.py`).
+Для другого порта задайте соответствующий origin явно.
 
 ---
 
@@ -37,7 +39,7 @@
 
 | Слой | Каталог | В UI/API | Дефолт |
 |------|---------|----------|--------|
-| **video** | `presets/video/` | да (`video_id`) | `hevc_rip` |
+| **video** | `presets/video/` | да (`video_id`) | `hevc_auto_level_rip` |
 | **audio** | `presets/audio/` | да (`audio_id`) | `copy` |
 | **subtitles** | `presets/subtitles/` | нет (внутренний) | `copy` |
 | **data** | `presets/data/` | нет (внутренний) | `copy` |
@@ -51,6 +53,10 @@
 | `hevc_rip` | HEVC rip | 23 | slow |
 | `hevc_auto_level_rip` | HEVC rip auto level | 23 | slow |
 | `hevc_remux` | HEVC remux | 21 | slower |
+
+Default — `hevc_auto_level_rip` (HEVC rip auto level). В нём отсутствует
+`x265_params`: level/ref выбирает сам x265. У `hevc_rip` и `hevc_remux`
+по-прежнему явно заданы `level=5.1:ref=6`.
 
 ### Audio
 
@@ -122,6 +128,8 @@ curl -s http://localhost:5000/health
 ```
 
 **PUT body:** `{ "max_concurrent_encodes": 2 }` (целое, 1–16).
+Булевы значения и дробные JSON числа (включая `2.0`) дают **400** без изменения
+настроек. Form принимает строковую запись целого числа.
 
 Сохраняется в `settings/app_settings.json`, применяется к `FFmpegWorker` без рестарта (уже идущие encode не прерываются). Пока ключ не сохранён — fallback на env `MAX_CONCURRENT_ENCODES` (дефолт **1**).
 
@@ -144,8 +152,8 @@ curl -s -X PUT http://localhost:5000/api/settings \
 {
   "videos": [
     {
-      "id": "hevc_rip",
-      "name": "HEVC rip",
+      "id": "hevc_auto_level_rip",
+      "name": "HEVC rip auto level",
       "default": true,
       "video_codec": "libx265",
       "preset": "slow",
@@ -162,7 +170,7 @@ curl -s -X PUT http://localhost:5000/api/settings \
     }
   ],
   "defaults": {
-    "video_id": "hevc_rip",
+    "video_id": "hevc_auto_level_rip",
     "audio_id": "copy",
     "audio_downmix": "none"
   }
@@ -186,7 +194,7 @@ curl -s http://localhost:5000/api/presets
 Поля:
 
 - `file` / `files` — видео (`.mp4`, `.mkv`);
-- `video_id` — по умолчанию default из YAML (`hevc_rip`);
+- `video_id` — по умолчанию default из YAML (`hevc_auto_level_rip`);
 - `audio_id` — по умолчанию `copy`;
 - `audio_downmix` — `none` \| `stereo` (по умолчанию `none`).
 
@@ -198,6 +206,29 @@ curl -s -F "file=@/path/video.mkv" -F "video_id=hevc_remux" \
 
 Пачка: одни `video_id` / `audio_id` / `audio_downmix` на все файлы.  
 Коды: **200** / **207** / **400**.
+
+Параметры ресурсов (form и internal JSON): `cpu_threads` — целое 0–64,
+`thread_queue_size` — целое 0–8192, `x265_pools` — целое 0–32.
+Ноль означает автоматический выбор; дроби, bool и выход за диапазон дают **400**
+до копирования/хеширования исходника.
+
+#### Загрузка частями
+
+Каждый multipart POST содержит `file` (часть данных), `filename` (имя MP4/MKV),
+`file_id`, `chunk_number`, `total_chunks` и одинаковые параметры кодирования.
+
+- `file_id`: 1–128 символов `A–Z`, `a–z`, `0–9`, `_`, `-`.
+- `1 <= total_chunks <= 100000`, `0 <= chunk_number < total_chunks`.
+  Отсутствующие/некорректные поля дают **400** до записи данных.
+- `filename` сохраняется как безопасное имя без каталога, как при полной загрузке.
+- Повторный ID с другим именем/количеством частей даёт **409**.
+- Промежуточный успех: **200** с `completed: false`; отправка последней части
+  запускает сборку. Если не хватает частей — **400**, принятые данные сохраняются.
+  Для повтора отправьте отсутствующие части, затем снова последнюю.
+- Сборка создаёт задание только после проверки комплекта. Ошибка не оставляет
+  неполный итоговый файл; части удаляются после успешного создания задания.
+- Лимит запроса и сумма частей одного файла ограничены `MAX_CONTENT_LENGTH`
+  (16 GiB по умолчанию). Превышение возвращает JSON и **413**.
 
 ---
 
@@ -351,6 +382,12 @@ GET одного задания возвращает JSON Job (**200**), неи�
 либо результат не является доступным обычным файлом. `Content-Length` соответствует
 размеру файла. Удаление файла после GET может изменить доступность к моменту download.
 
+Stop и single delete ждут завершения рабочего потока (включая preflight/remux),
+а также медиапроцесса. Если поток не завершился за 5 секунд либо процесс ещё жив,
+ответ — **409**; исходник, результат и запись задания не удаляются. Повторите
+действие после остановки. Если к моменту остановки результат уже финализирован,
+сохраняется `done`, он не заменяется на `cancelled`.
+
 #### `POST /api/jobs/download`
 
 Тело: `{ "job_ids": ["uuid", ...] }`.
@@ -382,6 +419,8 @@ curl -s -X POST http://localhost:5000/api/jobs/download \
 | **400** | Пустой/некорректный `job_ids` или ни одно не удалено |
 
 Правила очистки файлов те же, что у single delete (`original` не трогаем для internal / если ещё используется другим job).
+При ещё работающем потоке ошибка этого задания включается в `errors`; код ответа
+пачки остаётся **207** при частичном успехе и **400**, если ничего не удалено.
 
 ```bash
 curl -s -X POST http://localhost:5000/api/jobs/delete \
@@ -394,6 +433,8 @@ curl -s -X POST http://localhost:5000/api/jobs/delete \
 ### `GET /api/system-info`
 
 В т.ч. `libfdk_aac`, версии FFmpeg / mkvmerge.
+Если системный uptime недоступен, endpoint сохраняет HTTP **200** и остальные
+сведения, возвращая `uptime: "Недоступно"`, `system_status: "warning"`.
 
 ---
 
@@ -454,7 +495,8 @@ Subtitles/data ids в Job API не отдаются (подставляются 
 | **207** | Batch: частичный успех (upload / internal encode / delete) |
 | **403** | Internal encode выключен / путь вне roots |
 | **404** | Задание / файл не найден |
-| **409** | request_id повторён с другими параметрами; batch download: недоступные результаты (`missing[]`) |
+| **409** | request_id повторён с другими параметрами; конфликт chunk file_id; поток/процесс ещё останавливается; batch download: недоступные результаты (`missing[]`) |
+| **413** | Превышен размер запроса или суммарный размер частей файла |
 | **500** | Внутренняя ошибка |
 
 ---

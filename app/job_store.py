@@ -76,9 +76,12 @@ class JobStore:
             return inserted, dict(row)
 
     def finish_request(self, request_id: str, body: dict, status_code: int):
+        # Только владелец незавершённой резервации может опубликовать квитанцию.
+        # Повторный/запоздавший вызов не меняет уже готовый ответ или interrupted.
         with self._connect() as db:
             db.execute(
-                "UPDATE encode_requests SET state = 'ready', body = ?, status_code = ? WHERE request_id = ?",
+                "UPDATE encode_requests SET state = 'ready', body = ?, status_code = ? "
+                "WHERE request_id = ? AND state = 'processing'",
                 (_json(body), status_code, request_id),
             )
 

@@ -183,7 +183,7 @@ class TestInternalEncodeApi:
         assert response.status_code == 200
         job = response.get_json()['job']
         assert job['audio_id'] == 'aac'
-        assert job['video_id'] == 'hevc_rip'
+        assert job['video_id'] == 'hevc_auto_level_rip'
         assert job['ffmpeg_params']['audio_codec'] == 'aac'
 
     def test_hevc_remux_with_opus(self, client, internal_env):
@@ -228,9 +228,10 @@ class TestInternalEncodeApi:
         assert response.status_code == 200
         data = response.get_json()
         assert data['created'] is True
-        assert data['job']['video_id'] == 'hevc_rip'
+        assert data['job']['video_id'] == 'hevc_auto_level_rip'
         assert data['job']['audio_id'] == 'copy'
         assert data['job']['ffmpeg_params']['video_codec'] == 'libx265'
+        assert data['job']['ffmpeg_params']['x265_params'] is None
 
     def test_form_uses_ffmpeg_fields(self, client, internal_env):
         source_root, _uploads = internal_env

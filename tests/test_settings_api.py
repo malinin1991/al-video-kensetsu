@@ -133,3 +133,11 @@ class TestAppSettingsApi:
         response = test_client.get('/settings')
         assert response.status_code == 200
         assert 'Макс. одновременных кодирований'.encode('utf-8') in response.data
+
+    @pytest.mark.parametrize('value', [True, False, 1.9, 2.0, '1.5', None, [], {}])
+    def test_put_rejects_non_integer_and_does_not_apply(self, client, value):
+        test_client, dummy = client
+        response = test_client.put('/api/settings', json={'max_concurrent_encodes': value})
+        assert response.status_code == 400
+        dummy.set_max_concurrent.assert_not_called()
+        assert settings_store.has_saved_max_concurrent() is False

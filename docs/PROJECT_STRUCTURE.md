@@ -93,8 +93,9 @@ app/
   в uploads и выделение собственного исходника каждому заданию. Защищает
   библиотечные исходники и файлы, используемые другими заданиями, при очистке.
 - [`app/file_utils.py`](../app/file_utils.py) — допустимые расширения `.mp4` /
-  `.mkv`, безопасные имена, размер, SHA256 и удаление файлов. `get_video_info()`
+  `.mkv`, безопасные имена, `get_outputs_dir()` (`OUTPUTS_DIR`), размер, SHA256 и удаление файлов. `get_video_info()`
   проверяет наличие и размер файла; сведения о потоках получают другие модули.
+  SHA256 через `hashlib.file_digest` используется также в `Job.calculate_hash()`.
 - [`app/audio_downmix.py`](../app/audio_downmix.py) — ffprobe аудиопотоков,
   выбор дорожек и построение `filter_complex` / `-map` для stereo downmix.
   ATSC LoRo без LFE применяется только к дорожкам с количеством каналов больше двух.
@@ -137,25 +138,30 @@ app/
   даты в часовом поясе браузера, HTML escaping, уведомления, подтверждения,
   tooltips, карточки и строки заданий, выбор и одиночные/batch действия.
 - [`socket.js`](../app/static/js/socket.js) — одно подключение `window.socket`,
-  reconnect, начальный `GET /api/jobs`, общий `jobsCache`, обработка
+  reconnect, немедленный начальный `GET /api/jobs`, общий `jobsCache`, обработка
   `job_update` / `progress_update`. Объединяет REST и события, предотвращая
-  откат статуса/прогресса устаревшим ответом.
+  откат статуса/прогресса устаревшим ответом. При недоступном Socket.IO опрашивает
+  REST каждые 5 секунд без перекрытия запросов; скрытая вкладка не опрашивается.
+  Показывает статус соединения в навигации; после connect прекращает polling.
 - [`upload.js`](../app/static/js/upload.js) — отправка файлов и пути хранилища,
   прогресс загрузки. Небольшие файлы отправляет через XHR; большие — частями
   по 4 MiB через fetch с повторами. `addFormDataToFormData()` добавляет параметры,
-  в том числе поля, расположенные вне `ffmpegForm`.
+  в том числе поля, расположенные вне `ffmpegForm`. Параметры фиксируются на всю
+  отправку; частичный batch оставляет для повтора только непринятые файлы.
 - [`logs.js`](../app/static/js/logs.js) — загрузка `/api/logs` и `/api/logs/jobs`,
   фильтрация `log_update` по потоку/заданию, пауза и очистка. На главной странице
   инициализация прекращается, поскольку DOM страницы логов отсутствует.
-- [`socket.io.min.js`](../app/static/js/socket.io.min.js) — локальная реализация,
-  которую текущие шаблоны не подключают. Работающий клиент берётся с CDN.
+  `refreshFallbackLogs` обновляет логи через REST при потере Socket.IO с учётом паузы.
+- [`socket.io.min.js`](../app/static/js/socket.io.min.js) — официальный локальный
+  клиент Socket.IO 4.7.4; подключается в base.html. MIT license —
+  [`socket.io.LICENSE`](../app/static/js/socket.io.LICENSE).
 - [`main.css`](../app/static/css/main.css) — базовый layout и адаптивность;
   [`theme.css`](../app/static/css/theme.css) — тёмная тема;
   [`components.css`](../app/static/css/components.css) — задания, логи, toolbar,
   прогресс, кнопки и уведомления.
 
 Сборщика frontend и npm-зависимостей нет. `base.html` подключает с CDN
-Bootstrap CSS 5.3.2, Bootstrap JS 5.3.0, Bootstrap Icons 1.10.0 и Socket.IO 4.7.4.
+Bootstrap CSS 5.3.2, Bootstrap JS 5.3.0 и Bootstrap Icons 1.10.0.
 JS зависит от глобальных функций и идентификаторов элементов в шаблонах.
 
 ## Пресеты
@@ -163,8 +169,9 @@ JS зависит от глобальных функций и идентифик
 [`presets/`](../presets) содержит четыре независимых слоя. В каждом нужен
 ровно один `default: true`; некорректные defaults препятствуют запуску.
 
-- `video/`: `hevc_rip.yaml` — default; `hevc_auto_level_rip.yaml` — без заданного
-  x265 level/ref; `hevc_remux.yaml` — libx265 с другими параметрами качества.
+- `video/`: `hevc_auto_level_rip.yaml` — default, без заданного x265 level/ref;
+  `hevc_rip.yaml` — с фиксированными level/ref;
+  `hevc_remux.yaml` — libx265 с другими параметрами качества.
   Все три кодируют видео; имя `hevc_remux` не означает копирование видеопотока.
 - `audio/`: `copy.yaml` — default; `opus.yaml`, `aac.yaml`, `aac_fdk.yaml`,
   `none.yaml`. Доступность FDK зависит от сборки FFmpeg.
@@ -175,12 +182,19 @@ JS зависит от глобальных функций и идентифик
 `audio_id=none` отключает также субтитры и вложения. `audio_downmix=stereo`
 требует перекодирования аудио, несовместим с `copy` / `none`.
 Изменения YAML подхватываются после перезапуска; HTTP endpoint перезагрузки нет.
+При отсутствующем каталоге video генератор в `models/presets.py` создаёт все
+три стандартных пресета с тем же default `hevc_auto_level_rip`.
 
 ## Запуск и инфраструктура
 
-- [`docker/Dockerfile`](../docker/Dockerfile) — Python 3.14, runtime зависимости,
+- [`docker/Dockerfile`](../docker/Dockerfile) — Python 3.15.0, runtime зависимости,
   MKVToolNix CLI и каталоги данных; копирует приложение и пресеты. Тесты и pytest
   в образ не включаются. FFmpeg скачивается после сборки, при запуске.
+  `LANG` и `LC_ALL` явно заданы `C.UTF-8`: это необходимо MKVToolNix для
+  корректной обработки кириллических путей.
+  Wheels psutil/PyYAML собираются отдельным stage с компилятором и libyaml-dev;
+  runtime получает готовые расширения и libyaml, без компилятора. Bytecode `app/`
+  компилируется при сборке, запись новых pyc в runtime отключена.
 - [`docker/entrypoint.sh`](../docker/entrypoint.sh) — PATH, bootstrap FFmpeg,
   `FFMPEG_BOOTSTRAPPED=1` и выполнение `CMD` (`python run.py`).
 - [`docker-compose.yml`](../docker-compose.yml) — основной запуск с локальной
@@ -212,8 +226,15 @@ JS зависит от глобальных функций и идентифик
   registry env, build metadata, увеличение [`build_number.txt`](../build_number.txt).
   [`scripts/publish.ps1`](../scripts/publish.ps1) — обёртка для multiarch push.
 - [`.github/workflows/docker-publish.yml`](../.github/workflows/docker-publish.yml)
-  — multiarch публикация по тегу `v*` или вручную; pytest не запускает,
-  `build_number.txt` не увеличивает.
+  — multiarch публикация по тегу `v*` или вручную; зависит от успешного Tests
+  workflow и не увеличивает `build_number.txt`.
+- [`.github/workflows/tests.yml`](../.github/workflows/tests.yml) — Python
+  3.15/3.15t, проверка GIL после native imports, pip check и JavaScript тесты.
+- [`scripts/benchmark_runtime.py`](../scripts/benchmark_runtime.py) — изолированные
+  замеры API с 1/4 потоками, памяти, режима GIL/JIT и SHA256; пишет JSON результатов.
+- [`.python-version`](../.python-version) — версия локального Python 3.15.0.
+- [`docs/benchmarks/`](benchmarks) — исходные JSON замеров Python 3.15/3.15t
+  и сводка; методика и выбор runtime описаны в [DEVELOPMENT.md](DEVELOPMENT.md).
 - [`requirements.txt`](../requirements.txt) — фиксированные runtime зависимости;
   [`requirements-dev.txt`](../requirements-dev.txt) — pytest.
 - [`config.example.env`](../config.example.env) — пример env приложения,
@@ -262,8 +283,8 @@ JS зависит от глобальных функций и идентифик
 
 - `/app/uploads` — загрузки, каталоги чанков `temp_{file_id}` и копии исходников
   для заданий. Может быть изменён через `UPLOADS_DIR`.
-- `/app/outputs` — готовые MKV и временные файлы обработки. Путь задан в воркере;
-  env `OUTPUT_FOLDER` его не меняет.
+- `/app/outputs` — готовые MKV и временные файлы обработки. Путь задаётся через
+  `OUTPUTS_DIR`; исторический env `OUTPUT_FOLDER` не читается.
 - `/app/logs` — файловые логи; путь может быть изменён через `LOG_DIR`.
 - `/app/settings/app_settings.json` — сохранённый ник и параллельность;
   путь может быть изменён через `APP_SETTINGS_PATH`.

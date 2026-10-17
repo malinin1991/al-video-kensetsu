@@ -9,6 +9,7 @@ const root = path.resolve(__dirname, '../..');
 function element() {
     const attributes = new Map();
     const classes = new Set();
+    const listeners = new Map();
     return {
         style: {}, value: '', innerHTML: '', textContent: '', disabled: false,
         classList: {
@@ -21,7 +22,16 @@ function element() {
         getAttribute: (name) => attributes.get(name),
         hasAttribute: (name) => attributes.has(name),
         removeAttribute: (name) => attributes.delete(name),
-        addEventListener() {}, querySelector() { return null; }, querySelectorAll() { return []; },
+        addEventListener(event, handler) {
+            if (!listeners.has(event)) listeners.set(event, []);
+            listeners.get(event).push(handler);
+        },
+        dispatchEvent(event) {
+            event.preventDefault = () => event.defaultPrevented = true;
+            (listeners.get(event.type) || []).forEach((handler) => handler(event));
+            return !event.defaultPrevented;
+        },
+        focus() {}, querySelector() { return null; }, querySelectorAll() { return []; },
     };
 }
 
@@ -61,6 +71,35 @@ function frontend(files = ['common', 'socket', 'upload']) {
     context.showAlert = (type, message) => alerts.push({ type, message });
     context.refreshJobsList = () => {};
     return { context, elements, alerts, domReady, intervals };
+}
+
+function serverSaveFrontend({ deferShown = false } = {}) {
+    const env = frontend(['common']);
+    const { context, elements } = env;
+    ['serverSaveModal', 'serverSaveForm', 'serverSaveDirectory', 'serverSaveFilename',
+        'serverSaveError', 'serverSaveStatus', 'serverSaveSubmitBtn', 'serverSaveOverwriteBtn',
+        'serverSaveCancelBtn', 'serverSaveCloseBtn', 'serverSaveConflict', 'serverSaveConflictPath']
+        .forEach((id) => elements[id] = element());
+    const modal = {
+        shown: false,
+        show() {
+            this.shown = true;
+            if (!deferShown) this.finishShowing();
+        },
+        finishShowing() {
+            elements.serverSaveModal.dispatchEvent({ type: 'shown.bs.modal' });
+        },
+        hide() {
+            if (!elements.serverSaveModal.dispatchEvent({ type: 'hide.bs.modal' })) return;
+            this.shown = false;
+            elements.serverSaveModal.dispatchEvent({ type: 'hidden.bs.modal' });
+        },
+    };
+    context.bootstrap = { Modal: { getOrCreateInstance: () => modal } };
+    context.window.jobsCache = {
+        ready: { id: 'ready', filename: 'source.mkv', output_filename: 'Фильм_[HEVC].mkv', status: 'done' },
+    };
+    return { ...env, modal };
 }
 
 test('filename escaping is safe in text and quoted HTML attributes', () => {
@@ -201,6 +240,11 @@ test('missing output disables download in cards, rows and batch actions', () => 
     assert.equal(context.isJobDownloadable(job), false);
     assert.match(context.createJobElement(job).innerHTML, /disabled title="Готовый файл отсутствует/);
     assert.match(context.createJobRow(job).innerHTML, /Файл отсутствует/);
+    for (const render of [context.createJobElement, context.createJobRow]) {
+        assert.match(render(job).innerHTML, /btn-save-server[\s\S]*?disabled title="Готовый файл отсутствует/);
+        assert.match(render({ ...job, output_available: true }).innerHTML,
+            /btn-save-server[\s\S]*?title="Сохранить на сервере"/);
+    }
     context.window.jobsCache[job.id] = job;
     context.window.selectedJobIds.add(job.id);
     let download = null;
@@ -208,6 +252,168 @@ test('missing output disables download in cards, rows and batch actions', () => 
     context.getVisibleJobIds = () => ['missing'];
     context.updateJobsSelectionUI();
     assert.equal(download.disabled, true);
+});
+
+test('server save submits a clean filename to the chosen directory without overwrite', async () => {
+    const { context, elements, alerts, modal } = serverSaveFrontend();
+    const requests = [];
+    context.fetch = async (url, options) => {
+        requests.push({ url, body: JSON.parse(options.body) });
+        return { ok: true, json: async () => ({ saved: true, path: '/media/Фильм_[HEVC].mkv' }) };
+    };
+    context.saveJobToServer('ready');
+    assert.equal(modal.shown, true);
+    assert.equal(elements.serverSaveFilename.textContent, 'Фильм_[HEVC].mkv');
+    elements.serverSaveDirectory.value = ' /media ';
+    elements.serverSaveForm.dispatchEvent({ type: 'submit' });
+    await new Promise(setImmediate);
+    assert.deepEqual(requests, [{ url: '/api/jobs/ready/save', body: { directory: '/media', overwrite: false } }]);
+    assert.equal(modal.shown, false);
+    assert.deepEqual(alerts, [{ type: 'success', message: 'Файл сохранён: /media/Фильм_[HEVC].mkv' }]);
+});
+
+test('server save waits for the modal opening transition before allowing a request', async () => {
+    const { context, elements, modal } = serverSaveFrontend({ deferShown: true });
+    let requests = 0;
+    let focused = null;
+    elements.serverSaveDirectory.focus = () => focused = elements.serverSaveDirectory;
+    context.fetch = async () => {
+        requests++;
+        return { ok: true, json: async () => ({ saved: true }) };
+    };
+    context.saveJobToServer('ready');
+    elements.serverSaveDirectory.value = '/media';
+    assert.equal(elements.serverSaveSubmitBtn.disabled, true);
+    await context.submitServerSave();
+    elements.serverSaveForm.dispatchEvent({ type: 'submit' });
+    await new Promise(setImmediate);
+    assert.equal(requests, 0);
+    modal.finishShowing();
+    assert.equal(elements.serverSaveSubmitBtn.disabled, false);
+    assert.equal(focused, elements.serverSaveDirectory);
+    await context.submitServerSave();
+    assert.equal(requests, 1);
+    assert.equal(modal.shown, false, 'fast success can close the fully opened modal');
+});
+
+test('server save cancellation after a conflict never sends an overwrite request', async () => {
+    const { context, elements, modal } = serverSaveFrontend();
+    let requests = 0;
+    let focused = null;
+    elements.serverSaveCancelBtn.focus = () => focused = elements.serverSaveCancelBtn;
+    context.fetch = async () => {
+        requests++;
+        return { ok: false, status: 409, json: async () => ({ code: 'file_exists', path: '/media/Фильм_[HEVC].mkv' }) };
+    };
+    context.saveJobToServer('ready');
+    elements.serverSaveDirectory.value = '/media';
+    await context.submitServerSave();
+    assert.equal(elements.serverSaveConflict.hidden, false);
+    assert.equal(elements.serverSaveOverwriteBtn.hidden, false);
+    assert.equal(elements.serverSaveDirectory.disabled, true);
+    assert.equal(focused, elements.serverSaveCancelBtn, 'conflict moves focus to the safe cancellation action');
+    modal.hide();
+    elements.serverSaveOverwriteBtn.dispatchEvent({ type: 'click' });
+    await new Promise(setImmediate);
+    assert.equal(requests, 1);
+    assert.equal(modal.shown, false);
+});
+
+test('explicit overwrite confirms the same job and path even if inputs or selection change', async () => {
+    const { context, elements } = serverSaveFrontend();
+    const requests = [];
+    context.window.jobsCache.other = { id: 'other', filename: 'other.mkv', status: 'done' };
+    context.fetch = async (url, options) => {
+        requests.push({ url, body: JSON.parse(options.body) });
+        return requests.length === 1
+            ? { ok: false, status: 409, json: async () => ({ code: 'file_exists', path: '/media/Фильм_[HEVC].mkv' }) }
+            : { ok: true, json: async () => ({ saved: true, overwritten: true }) };
+    };
+    context.saveJobToServer('ready');
+    elements.serverSaveDirectory.value = '/media';
+    await context.submitServerSave(true);
+    assert.equal(requests.length, 0, 'overwrite cannot be sent before a conflict');
+    await context.submitServerSave(false);
+    await context.submitServerSave(false);
+    assert.equal(requests.length, 1, 'ordinary submit cannot confirm overwrite');
+    context.saveJobToServer('other');
+    elements.serverSaveDirectory.value = '/changed';
+    elements.serverSaveOverwriteBtn.dispatchEvent({ type: 'click' });
+    await new Promise(setImmediate);
+    assert.deepEqual(requests, [
+        { url: '/api/jobs/ready/save', body: { directory: '/media', overwrite: false } },
+        { url: '/api/jobs/ready/save', body: { directory: '/media', overwrite: true } },
+    ]);
+});
+
+test('server save blocks duplicate requests and closing while a request is running', async () => {
+    const { context, elements, modal } = serverSaveFrontend();
+    let finish;
+    let requests = 0;
+    context.fetch = () => {
+        requests++;
+        return new Promise((resolve) => finish = resolve);
+    };
+    context.saveJobToServer('ready');
+    elements.serverSaveDirectory.value = '/media';
+    const pending = context.submitServerSave();
+    assert.equal(elements.serverSaveDirectory.disabled, true);
+    assert.equal(elements.serverSaveCancelBtn.disabled, true);
+    assert.equal(elements.serverSaveForm.getAttribute('aria-busy'), 'true');
+    modal.hide();
+    await context.submitServerSave();
+    assert.equal(requests, 1);
+    assert.equal(modal.shown, true);
+    finish({ ok: true, json: async () => ({ saved: true }) });
+    await pending;
+    assert.equal(modal.shown, false);
+});
+
+test('server save reports errors safely, unlocks the directory and rejects missing files', async () => {
+    const { context, elements, alerts } = serverSaveFrontend();
+    context.window.jobsCache.ready.output_filename = '<img src=x onerror=bad>.mkv';
+    let requests = 0;
+    context.fetch = async () => {
+        requests++;
+        return { ok: false, status: 400, json: async () => ({ error: '<b>Нет доступа</b>' }) };
+    };
+    context.saveJobToServer('ready');
+    assert.equal(elements.serverSaveFilename.textContent, '<img src=x onerror=bad>.mkv');
+    assert.equal(elements.serverSaveFilename.innerHTML, '');
+    await context.submitServerSave();
+    assert.equal(requests, 0);
+    assert.match(elements.serverSaveError.textContent, /Укажите абсолютный путь/);
+    elements.serverSaveDirectory.value = '/media';
+    await context.submitServerSave();
+    assert.equal(elements.serverSaveError.textContent, '<b>Нет доступа</b>');
+    assert.equal(elements.serverSaveError.innerHTML, '');
+    assert.equal(elements.serverSaveError.hidden, false);
+    assert.equal(elements.serverSaveDirectory.disabled, false);
+    context.window.jobsCache.ready.output_available = false;
+    context.saveJobToServer('ready');
+    context.saveJobToServer('unknown');
+    assert.equal(requests, 1);
+    assert.equal(alerts.length, 2);
+    assert.equal(alerts[0].type, 'warning');
+    assert.match(context.serverSaveButtonHtml({ id: `unsafe\"'<>&`, status: 'done' }),
+        /data-job-id="unsafe&quot;&#39;&lt;&gt;&amp;"/);
+});
+
+test('server save conflict path is text and the shared modal has an accessible directory label', async () => {
+    const { context, elements } = serverSaveFrontend();
+    context.fetch = async () => ({ ok: false, status: 409, json: async () => ({
+        code: 'file_exists', path: '/media/<img src=x onerror=bad>.mkv',
+    }) });
+    context.saveJobToServer('ready');
+    elements.serverSaveDirectory.value = '/media';
+    await context.submitServerSave();
+    assert.equal(elements.serverSaveConflictPath.textContent, '/media/<img src=x onerror=bad>.mkv');
+    assert.equal(elements.serverSaveConflictPath.innerHTML, '');
+    const template = fs.readFileSync(path.join(root, 'app/templates/base.html'), 'utf8');
+    assert.match(template, /<label for="serverSaveDirectory"/);
+    assert.match(template, /id="serverSaveConflict"[^>]*role="alert"/);
+    assert.match(template, /data-bs-dismiss="modal" id="serverSaveCancelBtn">Отмена/);
+    assert.match(template, /id="serverSaveOverwriteBtn" hidden>Перезаписать/);
 });
 
 test('settings reject fractions rather than silently rounding them', async () => {

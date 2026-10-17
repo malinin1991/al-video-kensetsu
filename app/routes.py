@@ -42,6 +42,7 @@ from app.internal_source import (
     resolve_internal_source_path,
 )
 from app.logger import logger
+from app.output_export import OutputExportError, save_job_output
 from app.settings_store import (
     DEFAULT_CONCURRENT_ENCODES,
     MAX_CONCURRENT_ENCODES_LIMIT,
@@ -1150,16 +1151,15 @@ def _batch_archive_name(job_ids: list[str]) -> str:
     return f'kensetsu-{hash8}.zip'
 
 
-def _unique_zip_arcname(filename: str, job_id: str, used: set[str]) -> str:
-    """Имя внутри ZIP; при коллизии — суффикс job_id[:8]."""
-    if filename not in used:
-        used.add(filename)
-        return filename
+def _unique_zip_arcname(filename: str, used: set[str]) -> str:
+    """Готовое имя в ZIP; совпадения получают (2), (3), без ID задания."""
     name, ext = os.path.splitext(filename)
-    candidate = f'{name}_{job_id[:8]}{ext}'
-    if candidate in used:
-        candidate = f'{name}_{job_id}{ext}'
-    used.add(candidate)
+    candidate = filename
+    number = 2
+    while candidate.casefold() in used:
+        candidate = f'{name} ({number}){ext}'
+        number += 1
+    used.add(candidate.casefold())
     return candidate
 
 
@@ -1186,7 +1186,7 @@ def download_jobs_batch():
         if job.available_output_size() is None:
             missing.append({
                 'job_id': job.id,
-                'filename': job.get_output_filename(),
+                'filename': job.get_download_filename(),
                 'path': job.output_path,
             })
             continue
@@ -1221,7 +1221,7 @@ def download_jobs_batch():
             zf.comment = comment
             for job in candidates:
                 arcname = _unique_zip_arcname(
-                    job.get_output_filename(), job.id, used_names
+                    job.get_download_filename(), used_names
                 )
                 zf.write(job.output_path, arcname=arcname)
 
@@ -1356,10 +1356,28 @@ def download_file(job_id):
         return send_file(
             job.output_path,
             as_attachment=True,
-            download_name=job.get_output_filename()
+            download_name=job.get_download_filename()
         )
     except OSError:
         return jsonify({'error': 'Выходной файл не найден'}), 404
+
+@main_bp.route('/api/jobs/<job_id>/save', methods=['POST'])
+def save_output_to_server(job_id):
+    """Копирует готовый результат в разрешённый каталог после подтверждения замены."""
+    job = get_job(job_id)
+    if job is None:
+        return jsonify({'error': 'Задание не найдено'}), 404
+    payload = request.get_json(silent=True)
+    if not request.is_json or not isinstance(payload, dict):
+        return jsonify({'error': 'Ожидается JSON объект'}), 400
+    try:
+        result = save_job_output(
+            job, payload.get('directory'), overwrite=payload.get('overwrite', False),
+        )
+    except OutputExportError as exc:
+        return jsonify(exc.payload), exc.status_code
+    return jsonify(result)
+
 
 @main_bp.route('/api/jobs/<job_id>/delete', methods=['DELETE'])
 def delete_job(job_id):
@@ -1493,7 +1511,7 @@ def api_log_job_ids():
             continue
         items.append({
             'id': job_id,
-            'label': job.get_output_filename(),
+            'label': job.get_download_filename(),
             'created_at': job.created_at.isoformat() if job.created_at else None,
         })
 

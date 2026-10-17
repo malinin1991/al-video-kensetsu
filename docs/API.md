@@ -25,6 +25,7 @@ Default включает localhost/127.0.0.1 на портах 3000 (Compose) и
 3. `GET /api/jobs` или `GET /api/jobs/<id>` — опрос статуса.
 4. `GET /api/jobs/<id>/download` — скачать результат при `output_available=true`.
    Или `POST /api/jobs/download` с `{ "job_ids": [...] }` — ZIP без сжатия (`ZIP_STORED`).
+   Для копии в папку на сервере — `POST /api/jobs/<id>/save`.
 5. `DELETE /api/jobs/<id>/delete` или `POST /api/jobs/delete` с `{ "job_ids": [...] }`.
 
 Достаточно REST; WebSocket опционален для live-прогресса.
@@ -363,7 +364,7 @@ SQLite и файловые операции не являются одной т�
 
 ---
 
-### `GET /api/jobs` / `GET /api/jobs/<id>` / download / stop / delete
+### `GET /api/jobs` / `GET /api/jobs/<id>` / download / save / stop / delete
 
 | Метод | Путь | Описание |
 |-------|------|----------|
@@ -372,6 +373,7 @@ SQLite и файловые операции не являются одной т�
 | GET | `/api/jobs/<id>/download` | Скачать один готовый файл |
 | HEAD | `/api/jobs/<id>/download` | Проверить готовность и размер без скачивания видео |
 | POST | `/api/jobs/download` | Пакетное скачивание ZIP |
+| POST | `/api/jobs/<id>/save` | Сохранить копию готового результата в папку на сервере |
 | DELETE | `/api/jobs/<id>/delete` | Удалить одно задание |
 | POST | `/api/jobs/delete` | Пакетное удаление |
 | POST | `/api/jobs/<id>/stop` | Остановить planned/in_progress |
@@ -381,6 +383,9 @@ GET одного задания возвращает JSON Job (**200**), неи�
 `done`, **400** пока статус другой, **404** если задание или результат отсутствует
 либо результат не является доступным обычным файлом. `Content-Length` соответствует
 размеру файла. Удаление файла после GET может изменить доступность к моменту download.
+Имя скачивания в `Content-Disposition` — `{stem}_[HEVC].mkv`, без суффикса
+задания. Внутреннее имя на диске остаётся `{stem}_[HEVC]_{id[:8]}.mkv`:
+задания с одинаковым исходным именем не перезаписывают результаты друг друга.
 
 Stop и single delete ждут завершения рабочего потока (включая preflight/remux),
 а также медиапроцесса. Если поток не завершился за 5 секунд либо процесс ещё жив,
@@ -398,12 +403,61 @@ Stop и single delete ждут завершения рабочего поток�
   - `blake2b8` = 8 hex от `blake2b(digest_size=4)` по отсортированным `job_id` через `\n` (только те, что в архиве).
   - Сжатие: `ZIP_STORED` (без deflate).
   - Comment архива: `kensetsu batch; N files; job_ids: …`.
-- Имена внутри ZIP: `job.get_output_filename()`; при коллизии — суффикс `job_id[:8]`.
+- Имена внутри ZIP: `job.get_download_filename()`, без суффикса задания.
+  Совпадения без учёта регистра получают ` (2)`, ` (3)` перед `.mkv`;
+  например `episode_[HEVC].mkv`, `episode_[HEVC] (2).mkv`.
 
 ```bash
 curl -s -X POST http://localhost:5000/api/jobs/download \
   -H "Content-Type: application/json" \
   -d '{"job_ids":["id1","id2"]}' -o batch.zip
+```
+
+#### `POST /api/jobs/<id>/save`
+
+Копирует доступный финальный результат `done` в существующую папку сервера
+с готовым именем `{stem}_[HEVC].mkv`. Исходный результат и `output_path` задания
+не меняются. Удаление задания не удаляет сохранённую копию.
+
+```json
+{"directory":"/exports/season-01","overwrite":false}
+```
+
+`directory` — непустой абсолютный путь к существующей папке; автоматически
+папка не создаётся. В Docker это путь внутри контейнера, доступный на запись.
+Корни разрешаются через `INTERNAL_OUTPUT_ROOTS` (список через запятую,
+default `/anilibria`); явно пустая строка отключает сохранение (**403**).
+Путь после `realpath`, включая символические ссылки, должен оставаться внутри
+разрешённого корня. Корни исходников `INTERNAL_SOURCE_ROOTS` на сохранение не влияют.
+
+`overwrite` необязателен, по умолчанию `false`; принимается только JSON bool.
+Если файл с готовым именем уже есть, ответ **409**, копирования нет:
+
+```json
+{"error":"Файл уже существует. Перезаписать его?","code":"file_exists","path":"/exports/season-01/episode_[HEVC].mkv","filename":"episode_[HEVC].mkv"}
+```
+
+Клиент предлагает «Перезаписать» или «Отмена». Только после явного подтверждения
+повторяет запрос к той же папке с `overwrite: true`; отмена не отправляет запрос.
+Этот флаг разрешает заменить обычный файл; совпадение с самим результатом,
+символическая ссылка, каталог и другой специальный объект дают **409** без
+`code: "file_exists"`, предлагать их перезапись нельзя.
+
+Успех — **200**:
+
+```json
+{"saved":true,"path":"/exports/season-01/episode_[HEVC].mkv","filename":"episode_[HEVC].mkv","overwritten":false}
+```
+
+`overwritten` показывает, заменён ли существующий файл. Остальные ошибки:
+**400** — некорректные JSON/поля, относительный путь, путь не к папке или
+неготовое задание; **403** — путь вне разрешённых корней или недостаточно прав;
+**404** — нет задания, итогового файла или целевой папки; **500** — ошибка копирования.
+
+```bash
+curl -s -X POST 'http://localhost:5000/api/jobs/<id>/save' \
+  -H "Content-Type: application/json" \
+  -d '{"directory":"/exports/season-01"}'
 ```
 
 #### `POST /api/jobs/delete`
@@ -459,11 +513,11 @@ curl -s -X POST http://localhost:5000/api/jobs/delete \
 
 | Поле | Описание |
 |------|----------|
-| `id` | ID задания для GET / download / stop / delete |
+| `id` | ID задания для GET / download / save / stop / delete |
 | `input_path` | Точная строка из internal `path` / `paths`, иначе `null` |
 | `request_id` | ID запроса internal encode при его передаче, иначе `null` |
 | `filename` | Имя входного файла без каталога |
-| `output_filename` | Имя результата для скачивания |
+| `output_filename` | Готовое имя `{stem}_[HEVC].mkv` без суффикса задания, для скачивания и серверной копии |
 | `status`, `progress` | Состояние и проценты выполнения |
 | `error_message` | Причина ошибки/отмены, иначе `null` |
 | `created_at`, `started_at`, `completed_at` | Даты UTC с `Z` / `null` |
@@ -483,6 +537,10 @@ Subtitles/data ids в Job API не отдаются (подставляются 
 `status: done`, но `output_available: false`, `download_url: null` и
 `output_size_bytes: null`. История заданий восстанавливается из SQLite при старте;
 само наличие MKV в outputs не создаёт задание.
+Для восстановленных заданий GET Job и фактическое скачивание также используют
+готовое имя без суффикса; `output_path` на диске не переименовывается.
+Опубликованные квитанции internal encode неизменяемы: историческая квитанция
+может по-прежнему содержать прежний `output_filename` с суффиксом задания.
 
 ---
 
@@ -493,9 +551,9 @@ Subtitles/data ids в Job API не отдаются (подставляются 
 | **400** | Неизвестный `video_id`/`audio_id`; stereo+copy/none; FDK недоступен; нет файлов/путей; batch delete без успехов |
 | **202** | Квитанция internal encode ещё `processing` или `interrupted` |
 | **207** | Batch: частичный успех (upload / internal encode / delete) |
-| **403** | Internal encode выключен / путь вне roots |
+| **403** | Internal encode / серверное сохранение выключены; путь вне соответствующих roots; недостаточно прав на сохранение |
 | **404** | Задание / файл не найден |
-| **409** | request_id повторён с другими параметрами; конфликт chunk file_id; поток/процесс ещё останавливается; batch download: недоступные результаты (`missing[]`) |
+| **409** | request_id повторён с другими параметрами; конфликт chunk file_id; поток/процесс ещё останавливается; batch download: недоступные результаты (`missing[]`); серверное сохранение: целевое имя занято или совпадает с самим результатом |
 | **413** | Превышен размер запроса или суммарный размер частей файла |
 | **500** | Внутренняя ошибка |
 
@@ -511,5 +569,8 @@ POST /api/upload  (files + video_id + audio_id [+ audio_downmix])
 GET  /api/jobs/<id>
 GET  /api/jobs/<id>/download
   или POST /api/jobs/download  { job_ids }
+  или POST /api/jobs/<id>/save  { directory, overwrite: false }
+       → при 409 + code=file_exists запросить подтверждение
+       → при согласии повторить с overwrite: true
 POST /api/jobs/delete  { job_ids }   # опционально, пакетно
 ```

@@ -14,6 +14,8 @@ services:
     volumes:
       - uploads:/app/uploads
       - outputs:/app/outputs
+      # Папка для готовых копий (запись); также задайте INTERNAL_OUTPUT_ROOTS=/exports:
+      # - ./data/exports:/exports
       - logs:/app/logs
       - settings:/app/settings
       - ffmpeg_bin:/app/ffmpeg
@@ -38,6 +40,7 @@ services:
       - TZ=Asia/Novosibirsk
       - CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http://172.18.0.1:3000,http://pc13.local:3000,http://*.local:3000
       - SOCKETIO_ASYNC_MODE=threading
+      - INTERNAL_OUTPUT_ROOTS=${INTERNAL_OUTPUT_ROOTS-/anilibria}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]

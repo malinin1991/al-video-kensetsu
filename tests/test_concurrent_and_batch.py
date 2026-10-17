@@ -9,6 +9,7 @@ import time
 import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock
+from werkzeug.http import parse_options_header
 
 import pytest
 
@@ -218,6 +219,47 @@ class TestConcurrentEncodes:
 
 
 class TestBatchDownload:
+    @pytest.mark.parametrize('filename', ['Серия 01.mkv', 'Show_abcdef12.mp4'])
+    def test_single_download_uses_ready_name_and_preserves_stored_file(self, client, tmp_path, filename):
+        job = _make_done_job(tmp_path, 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', filename, b'encoded')
+        stored_path = tmp_path / job.get_output_filename()
+        Path(job.output_path).rename(stored_path)
+        job.output_path = str(stored_path)
+        # История со старым рабочим именем не требует миграции файлов.
+        job = Job.from_record(job.to_record())
+        routes.jobs_storage[job.id] = job
+        ready_name = f'{Path(filename).stem}_[HEVC].mkv'
+
+        state = client.get(f'/api/jobs/{job.id}').get_json()
+        assert state['output_filename'] == ready_name
+        for method in (client.get, client.head):
+            with method(f'/api/jobs/{job.id}/download') as response:
+                assert response.status_code == 200
+                disposition, options = parse_options_header(response.headers['Content-Disposition'])
+                assert disposition == 'attachment'
+                assert options['filename'] == ready_name
+                assert response.content_length == len(b'encoded')
+                assert response.get_data() == (b'' if method == client.head else b'encoded')
+        assert Path(job.output_path) == stored_path
+        assert stored_path.read_bytes() == b'encoded'
+        assert not (tmp_path / ready_name).exists()
+
+    def test_zip_ready_names_keep_all_same_named_results_without_ids(self, client, tmp_path):
+        jobs = [
+            _make_done_job(tmp_path, 'a' * 32, 'Episode.mkv', b'first'),
+            _make_done_job(tmp_path, 'b' * 32, 'Episode.mp4', b'second'),
+            _make_done_job(tmp_path, 'c' * 32, 'episode.mkv', b'third'),
+        ]
+        routes.jobs_storage.update({job.id: job for job in jobs})
+        with client.post('/api/jobs/download', json={'job_ids': [job.id for job in jobs]}) as response:
+            assert response.status_code == 200
+            with zipfile.ZipFile(io.BytesIO(response.get_data())) as archive:
+                assert archive.namelist() == [
+                    'Episode_[HEVC].mkv', 'Episode_[HEVC] (2).mkv', 'episode_[HEVC] (3).mkv',
+                ]
+                assert [archive.read(name) for name in archive.namelist()] == [b'first', b'second', b'third']
+        assert all(Path(job.output_path).is_file() for job in jobs)
+
     def test_zip_stored_two_done(self, client, tmp_path):
         job1 = _make_done_job(
             tmp_path,
@@ -255,8 +297,8 @@ class TestBatchDownload:
                 info.compress_type == zipfile.ZIP_STORED for info in zf.infolist()
             )
             names = set(zf.namelist())
-            assert job1.get_output_filename() in names
-            assert job2.get_output_filename() in names
+            assert job1.get_download_filename() in names
+            assert job2.get_download_filename() in names
             comment = zf.comment.decode('utf-8')
             assert 'kensetsu batch; 2 files' in comment
             assert job1.id in comment and job2.id in comment

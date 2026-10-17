@@ -208,7 +208,7 @@ function initActionTooltips(root) {
         return;
     }
     const triggers = scope.querySelectorAll(
-        '.btn-delete[title], .btn-download[title], .btn-warning[title]'
+        '.btn-delete[title], .btn-download[title], .btn-save-server[title], .btn-warning[title]'
     );
     triggers.forEach((el) => {
         const existing = bootstrap.Tooltip.getInstance(el);
@@ -233,7 +233,7 @@ function disposeActionTooltips(root) {
         return;
     }
     const scope = root || document;
-    scope.querySelectorAll('.btn-delete, .btn-download, .btn-warning').forEach((el) => {
+    scope.querySelectorAll('.btn-delete, .btn-download, .btn-save-server, .btn-warning').forEach((el) => {
         const tip = bootstrap.Tooltip.getInstance(el);
         if (tip) {
             tip.dispose();
@@ -488,6 +488,7 @@ function createJobElement(job) {
             <button class="btn btn-download btn-sm me-1" onclick="downloadJob('${job.id}')" ${isJobDownloadable(job) ? '' : 'disabled'} title="${isJobDownloadable(job) ? 'Скачать' : 'Готовый файл отсутствует на диске'}">
                 <i class="bi bi-download"></i>
             </button>
+            ${serverSaveButtonHtml(job)}
             <button class="btn btn-delete btn-sm" onclick="deleteJob('${job.id}')" title="Удалить">
                 <i class="bi bi-trash"></i>
             </button>
@@ -569,6 +570,7 @@ function createJobRow(job) {
             <button class="btn btn-download btn-sm me-1" onclick="downloadJob('${job.id}')" ${isJobDownloadable(job) ? '' : 'disabled'} title="${isJobDownloadable(job) ? 'Скачать' : 'Готовый файл отсутствует на диске'}">
                 <i class="bi bi-download"></i>
             </button>
+            ${serverSaveButtonHtml(job)}
             <button class="btn btn-delete btn-sm" onclick="deleteJob('${job.id}')" title="Удалить">
                 <i class="bi bi-trash"></i>
             </button>
@@ -615,6 +617,159 @@ function createJobRow(job) {
 // Действия с заданиями
 function downloadJob(jobId) {
     window.open(`/api/jobs/${jobId}/download`, '_blank');
+}
+
+function serverSaveButtonHtml(job) {
+    return `<button class="btn btn-outline-secondary btn-save-server btn-sm me-1"
+        data-job-id="${escapeHtml(job.id)}" onclick="saveJobToServer(this.dataset.jobId)"
+        ${isJobDownloadable(job) ? '' : 'disabled'} title="${isJobDownloadable(job) ? 'Сохранить на сервере' : 'Готовый файл отсутствует на диске'}" aria-label="Сохранить на сервере">
+        <i class="bi bi-folder-symlink"></i>
+    </button>`;
+}
+
+let _serverSaveState = null;
+let _serverSaveModalInitialized = false;
+
+function renderServerSaveModal() {
+    const state = _serverSaveState;
+    if (!state) return;
+    const awaitingOverwrite = state.awaitingOverwrite;
+    document.getElementById('serverSaveDirectory').disabled = state.busy || awaitingOverwrite;
+    document.getElementById('serverSaveSubmitBtn').hidden = awaitingOverwrite;
+    document.getElementById('serverSaveSubmitBtn').disabled = state.busy || !state.shown;
+    document.getElementById('serverSaveOverwriteBtn').hidden = !awaitingOverwrite;
+    document.getElementById('serverSaveOverwriteBtn').disabled = state.busy || !state.shown;
+    document.getElementById('serverSaveConflict').hidden = !awaitingOverwrite;
+    document.getElementById('serverSaveConflictPath').textContent = state.conflictPath || '';
+    document.getElementById('serverSaveCancelBtn').disabled = state.busy || !state.shown;
+    document.getElementById('serverSaveCloseBtn').disabled = state.busy || !state.shown;
+    document.getElementById('serverSaveStatus').textContent = state.busy ? 'Сохранение файла…' : '';
+    document.getElementById('serverSaveForm').setAttribute('aria-busy', String(state.busy));
+}
+
+function setServerSaveError(message) {
+    const errorEl = document.getElementById('serverSaveError');
+    errorEl.textContent = message;
+    errorEl.hidden = !message;
+}
+
+function initServerSaveModal() {
+    if (_serverSaveModalInitialized) return true;
+    const modalEl = document.getElementById('serverSaveModal');
+    const form = document.getElementById('serverSaveForm');
+    const overwriteBtn = document.getElementById('serverSaveOverwriteBtn');
+    if (!modalEl || !form || !overwriteBtn || typeof bootstrap === 'undefined' || !bootstrap.Modal) {
+        return false;
+    }
+    form.addEventListener('submit', (event) => {
+        event.preventDefault();
+        submitServerSave(false);
+    });
+    overwriteBtn.addEventListener('click', () => submitServerSave(true));
+    modalEl.addEventListener('shown.bs.modal', () => {
+        const state = _serverSaveState;
+        if (!state || state.closing) return;
+        state.shown = true;
+        renderServerSaveModal();
+        document.getElementById(state.awaitingOverwrite ? 'serverSaveCancelBtn' : 'serverSaveDirectory').focus();
+    });
+    modalEl.addEventListener('hide.bs.modal', (event) => {
+        if (!_serverSaveState) return;
+        if (_serverSaveState.busy) {
+            event.preventDefault();
+        } else {
+            _serverSaveState.closing = true;
+        }
+    });
+    modalEl.addEventListener('hidden.bs.modal', () => {
+        _serverSaveState = null;
+    });
+    _serverSaveModalInitialized = true;
+    return true;
+}
+
+/** Одна модалка сохраняет выбранное задание и подтверждает перезапись без смены цели. */
+function saveJobToServer(jobId) {
+    if (_serverSaveState && (_serverSaveState.busy || _serverSaveState.awaitingOverwrite || _serverSaveState.closing)) return;
+    const job = window.jobsCache && window.jobsCache[jobId];
+    if (!isJobDownloadable(job)) {
+        showAlert('warning', 'Готовый файл недоступен для сохранения');
+        return;
+    }
+    if (!initServerSaveModal()) {
+        showAlert('danger', 'Окно сохранения на сервере недоступно');
+        return;
+    }
+    _serverSaveState = {
+        jobId, filename: job.output_filename || job.filename,
+        directory: '', busy: false, awaitingOverwrite: false, conflictPath: '', closing: false, shown: false,
+    };
+    document.getElementById('serverSaveFilename').textContent = _serverSaveState.filename;
+    document.getElementById('serverSaveDirectory').value = '';
+    setServerSaveError('');
+    renderServerSaveModal();
+    document.querySelectorAll('[data-bs-original-title]').forEach((el) => {
+        bootstrap.Tooltip?.getInstance(el)?.hide();
+    });
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('serverSaveModal')).show();
+}
+
+async function submitServerSave(overwrite = false) {
+    const state = _serverSaveState;
+    // overwrite=true доступен только после ответа file_exists и явного подтверждения.
+    if (!state || !state.shown || state.busy || state.closing || overwrite !== state.awaitingOverwrite) return;
+    if (!overwrite) {
+        const directory = document.getElementById('serverSaveDirectory').value.trim();
+        if (!directory) {
+            setServerSaveError('Укажите абсолютный путь к папке на сервере');
+            document.getElementById('serverSaveDirectory').focus();
+            return;
+        }
+        state.directory = directory;
+    }
+    state.busy = true;
+    setServerSaveError('');
+    renderServerSaveModal();
+    let saved = false;
+    try {
+        const response = await fetch(`/api/jobs/${encodeURIComponent(state.jobId)}/save`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ directory: state.directory, overwrite }),
+        });
+        let result = {};
+        try {
+            result = await response.json();
+        } catch (_e) {
+            // Ошибка HTTP может прийти без JSON, например от reverse proxy.
+        }
+        if (_serverSaveState !== state) return;
+        if (response.status === 409 && result.code === 'file_exists') {
+            state.awaitingOverwrite = true;
+            state.conflictPath = result.path || `${state.directory}/${state.filename}`;
+            return;
+        }
+        if (!response.ok || result.saved !== true) {
+            throw new Error(result.error || 'Не удалось сохранить файл на сервере');
+        }
+        saved = true;
+        showAlert('success', `Файл сохранён: ${result.path || result.filename || state.filename}`);
+    } catch (error) {
+        if (_serverSaveState !== state) return;
+        state.awaitingOverwrite = false;
+        state.conflictPath = '';
+        setServerSaveError(error.message || 'Не удалось сохранить файл на сервере');
+    } finally {
+        state.busy = false;
+        if (_serverSaveState === state) {
+            renderServerSaveModal();
+            if (saved) {
+                bootstrap.Modal.getOrCreateInstance(document.getElementById('serverSaveModal')).hide();
+            } else if (state.awaitingOverwrite) {
+                document.getElementById('serverSaveCancelBtn').focus();
+            }
+        }
+    }
 }
 
 async function downloadSelectedJobs() {
@@ -858,6 +1013,7 @@ async function stopJob(jobId) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    initServerSaveModal();
     const selectAll = document.getElementById('selectAllJobs');
     if (selectAll) {
         selectAll.addEventListener('change', () => {

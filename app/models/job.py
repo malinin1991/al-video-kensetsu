@@ -90,9 +90,15 @@ class Job:
         return current_hash == self.file_hash
     
     def get_output_filename(self):
-        """Генерирует имя выходного файла"""
+        """Рабочее имя на диске с ID задания для защиты от совпадений."""
         name, ext = os.path.splitext(self.filename)
         return f"{name}_[HEVC]_{self.id[:8]}.mkv"
+
+    def get_download_filename(self):
+        """Готовое имя для скачивания и сохранения вне рабочего каталога."""
+        filename = os.path.basename(self.filename.replace('\\', '/'))
+        name, _ = os.path.splitext(filename)
+        return f"{name}_[HEVC].mkv"
 
     def display_label(self) -> str:
         """Подпись пресета для UI: video / audio (+ downmix)."""
@@ -152,7 +158,7 @@ class Job:
             'input_path': self.input_path,
             'request_id': self.request_id,
             'filename': self.filename,
-            'output_filename': self.get_output_filename(),
+            'output_filename': self.get_download_filename(),
             'output_available': output_size is not None,
             'download_url': f'/api/jobs/{self.id}/download' if output_size is not None else None,
             'output_size_bytes': output_size,

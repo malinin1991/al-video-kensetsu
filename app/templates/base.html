@@ -88,6 +88,35 @@
         </div>
     </div>
 
+    <!-- Сохранение готового файла в папку на сервере -->
+    <div class="modal fade" id="serverSaveModal" tabindex="-1" aria-labelledby="serverSaveModalTitle" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <form class="modal-content" id="serverSaveForm">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="serverSaveModalTitle">Сохранить на сервере</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" id="serverSaveCloseBtn" aria-label="Закрыть"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="mb-3">Имя файла: <span id="serverSaveFilename" class="text-break"></span></p>
+                    <label for="serverSaveDirectory" class="form-label">Папка на сервере</label>
+                    <input type="text" class="form-control" id="serverSaveDirectory" placeholder="/media/готовые" aria-describedby="serverSaveDirectoryHelp serverSaveError" autocomplete="off" required>
+                    <div id="serverSaveDirectoryHelp" class="form-text">Укажите абсолютный путь к существующей папке на сервере.</div>
+                    <div id="serverSaveConflict" class="alert alert-warning mt-3 mb-0" role="alert" hidden>
+                        <p class="mb-1">Файл уже существует. Перезаписать его?</p>
+                        <div id="serverSaveConflictPath" class="text-break"></div>
+                    </div>
+                    <div id="serverSaveError" class="text-danger mt-3" role="alert" hidden></div>
+                    <div id="serverSaveStatus" class="text-muted mt-3" role="status" aria-live="polite"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" id="serverSaveCancelBtn">Отмена</button>
+                    <button type="submit" class="btn btn-primary" id="serverSaveSubmitBtn">Сохранить</button>
+                    <button type="button" class="btn btn-danger" id="serverSaveOverwriteBtn" hidden>Перезаписать</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <!-- Socket.IO -->

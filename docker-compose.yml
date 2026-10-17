@@ -12,6 +12,8 @@ services:
       - uploads:/app/uploads
       # Хранилище исходников для внутреннего режима (раскомментируйте):
       # - /mnt/user/anilibria:/anilibria:ro
+      # Папка для готовых копий (запись); также задайте INTERNAL_OUTPUT_ROOTS=/exports:
+      # - /mnt/user/anilibria-encoded:/exports
       - outputs:/app/outputs
       - logs:/app/logs
       - settings:/app/settings
@@ -41,6 +43,7 @@ services:
       - CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http://172.18.0.1:3000,http://pc13.local:3000,http://*.local:3000
       - SOCKETIO_ASYNC_MODE=threading
       - INTERNAL_SOURCE_ROOTS=/anilibria
+      - INTERNAL_OUTPUT_ROOTS=${INTERNAL_OUTPUT_ROOTS-/anilibria}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]

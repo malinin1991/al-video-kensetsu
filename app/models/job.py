@@ -3,10 +3,9 @@ from enum import Enum
 from datetime import datetime, timezone
 import os
 import stat
+import copy
 from app.file_utils import calculate_file_hash
 from .presets import (
-    DEFAULT_AUDIO_ID,
-    DEFAULT_VIDEO_ID,
     display_label,
     normalize_audio_downmix,
     preset_manager,
@@ -50,28 +49,37 @@ class Job:
     file_hash: str | None = None
     ffmpeg_params: dict = None
     total_frames: int | None = None
-    video_id: str = DEFAULT_VIDEO_ID
-    audio_id: str = DEFAULT_AUDIO_ID
+    video_id: str | None = None
+    audio_id: str | None = None
     audio_downmix: str = "none"
     input_path: str | None = None
     request_id: str | None = None
+    preset_snapshot: dict | None = None
     
     def __post_init__(self):
         if self.created_at is None:
             self.created_at = utc_now()
-        if not self.video_id:
-            self.video_id = DEFAULT_VIDEO_ID
-        if not self.audio_id:
-            self.audio_id = DEFAULT_AUDIO_ID
         try:
             self.audio_downmix = normalize_audio_downmix(self.audio_downmix)
         except ValueError:
             self.audio_downmix = "none"
-        if self.ffmpeg_params is None:
-            # Без запасных хардкодов: только пресет video_id/audio_id
-            self.ffmpeg_params = preset_manager.resolve(
-                self.video_id, self.audio_id, self.audio_downmix
-            )
+        if self.preset_snapshot is None:
+            catalog = preset_manager.snapshot()
+            self.video_id = self.video_id or catalog.default_video_id
+            self.audio_id = self.audio_id or catalog.default_audio_id
+            if self.video_id == 'custom' or self.audio_id == 'custom':
+                self.preset_snapshot = {'label': display_label(
+                    None, None, self.audio_downmix, video_id='custom', audio_id='custom',
+                ), 'catalog_revision': catalog.catalog_revision, 'layers': {}}
+            else:
+                self.preset_snapshot = catalog.selection_snapshot(
+                    self.video_id, self.audio_id, self.audio_downmix,
+                )
+            if self.ffmpeg_params is None:
+                self.ffmpeg_params = catalog.resolve(
+                    self.video_id, self.audio_id, self.audio_downmix,
+                )
+        self.ffmpeg_params = copy.deepcopy(self.ffmpeg_params or {})
         # job.audio_downmix — канон для label и encode
         self.ffmpeg_params['audio_downmix'] = self.audio_downmix
     
@@ -102,15 +110,13 @@ class Job:
 
     def display_label(self) -> str:
         """Подпись пресета для UI: video / audio (+ downmix)."""
-        video = preset_manager.get_video(self.video_id)
-        audio = preset_manager.get_audio(self.audio_id)
-        return display_label(
-            video,
-            audio,
-            self.audio_downmix,
-            video_id=self.video_id,
-            audio_id=self.audio_id,
-        )
+        if self.preset_snapshot and self.preset_snapshot.get('label'):
+            return self.preset_snapshot['label']
+        label = display_label(None, None, self.audio_downmix,
+                              video_id=self.video_id, audio_id=self.audio_id)
+        if self.video_id != 'custom' and self.audio_id != 'custom':
+            label += ' · название на момент создания не сохранено'
+        return label
 
     def available_output_size(self) -> int | None:
         """Размер доступного финального файла; видео не читается."""
@@ -135,6 +141,13 @@ class Job:
     @classmethod
     def from_record(cls, record: dict) -> 'Job':
         record = dict(record)
+        # История никогда не разрешает пресеты заново, в том числе при повреждении.
+        if not isinstance(record.get('preset_snapshot'), dict):
+            record['preset_snapshot'] = {'legacy': True}
+        if not isinstance(record.get('ffmpeg_params'), dict):
+            record['ffmpeg_params'] = {}
+            record['status'] = JobStatus.ERROR.value
+            record['error_message'] = 'Не удалось восстановить параметры задания'
         record['status'] = JobStatus(record['status'])
         for key in ('created_at', 'started_at', 'completed_at'):
             value = record.get(key)
@@ -174,4 +187,5 @@ class Job:
             'audio_id': self.audio_id,
             'audio_downmix': self.audio_downmix,
             'preset_label': self.display_label(),
+            'preset_snapshot': copy.deepcopy(self.preset_snapshot),
         }

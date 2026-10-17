@@ -54,7 +54,6 @@ RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels -r requ
     && rm -rf /wheels
 
 COPY app/ ./app/
-COPY presets/ ./presets/
 COPY run.py ./
 COPY build_number.txt ./
 COPY docker/entrypoint.sh /docker-entrypoint.sh
@@ -64,6 +63,7 @@ RUN mkdir -p /app/uploads /app/outputs /app/logs /app/settings /app/data /app/ff
     && chmod +x /docker-entrypoint.sh \
     && python -m compileall -q /app/app
 
+ENV USER_PRESETS_PATH=/app/settings/presets/catalog.json
 ENV FFMPEG_DIR=/app/ffmpeg
 ENV FFMPEG_THREAD_QUEUE_SIZE=1024
 ENV FLASK_APP=app.main

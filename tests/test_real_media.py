@@ -112,3 +112,62 @@ def test_real_default_encode_metadata_download_and_receipt(
             if thread:
                 thread.join(timeout=10)
             routes.jobs_storage.pop(job.id, None)
+
+
+def test_real_user_preset_keeps_parameters_when_edited_during_encode(tmp_path, monkeypatch):
+    from app.models.presets import preset_manager
+    source_dir = tmp_path / 'library'
+    source_dir.mkdir()
+    source = source_dir / 'User preset.mkv'
+    monkeypatch.setenv('UPLOADS_DIR', str(tmp_path / 'uploads'))
+    monkeypatch.setenv('INTERNAL_SOURCE_ROOTS', str(source_dir))
+    monkeypatch.setenv('APP_SETTINGS_PATH', str(tmp_path / 'app_settings.json'))
+    monkeypatch.setattr(routes, 'get_ffmpeg_worker_instance', lambda: ffmpeg_worker)
+    subprocess.run([
+        get_ffmpeg_bin(), '-hide_banner', '-loglevel', 'error', '-y',
+        '-f', 'lavfi', '-i', 'testsrc2=size=128x96:rate=12:duration=1',
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-an', str(source),
+    ], check=True, capture_output=True, timeout=30)
+    job = None
+    try:
+        with app.test_client() as client:
+            definition = {'name': 'Мой быстрый HEVC', 'video_codec': 'libx265',
+                          'output_format': 'matroska', 'preset': 'ultrafast', 'crf': '32',
+                          'pixel_format': 'yuv420p10le'}
+            created = client.post('/api/preset-editor/video', json={'definition': definition, 'set_default': True},
+                                  headers={'If-Match': f'"{preset_manager.catalog_revision}"'})
+            assert created.status_code == 201, created.json
+            preset_id = created.json['id']
+            response = client.post('/api/internal/encode', json={
+                'path': str(source), 'update_metadata': False, 'cpu_threads': 1, 'x265_pools': 1,
+            })
+            assert response.status_code == 200, response.json
+            job = routes.get_job(response.json['job']['id'])
+            definition.update(name='Изменённый HEVC', crf='20')
+            changed = client.put(f'/api/preset-editor/video/{preset_id}', json={'definition': definition},
+                                 headers={'If-Match': f'"{preset_manager.catalog_revision}"'})
+            assert changed.status_code == 200, changed.json
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline and job.status.value in ('planned', 'in_progress'):
+                time.sleep(0.05)
+            assert job.status.value == 'done', job.error_message
+            assert job.video_id == preset_id
+            assert job.ffmpeg_params['crf'] == '32'
+            assert job.display_label() == 'Мой быстрый HEVC / Copy'
+            argv = ffmpeg_worker._build_ffmpeg_command(job)
+            assert argv[argv.index('-crf') + 1] == '32'
+            assert preset_manager.get_video(preset_id).crf == '20'
+            probe = json.loads(subprocess.run([
+                get_ffprobe_bin(), '-v', 'error', '-show_streams', '-of', 'json', job.output_path,
+            ], check=True, capture_output=True, text=True, timeout=30).stdout)
+            video = next(s for s in probe['streams'] if s['codec_type'] == 'video')
+            assert video['codec_name'] == 'hevc'
+            assert video['pix_fmt'] == 'yuv420p10le'
+            assert client.get(f'/api/jobs/{job.id}/download').status_code == 200
+    finally:
+        if job is not None:
+            ffmpeg_worker.stop_job(job.id)
+            thread = ffmpeg_worker._job_threads.get(job.id)
+            if thread:
+                thread.join(timeout=10)
+            routes.jobs_storage.pop(job.id, None)

@@ -42,6 +42,9 @@
                 <a class="nav-link{{ ' active' if request.endpoint == 'main.settings_page' else '' }}"{% if request.endpoint == 'main.settings_page' %} aria-current="page"{% endif %} href="{{ url_for('main.settings_page') }}">
                     <i class="bi bi-gear"></i> Настройки
                 </a>
+                <a class="nav-link{{ ' active' if request.endpoint == 'preset_editor.editor_page' else '' }}" href="/presets">
+                    <i class="bi bi-sliders"></i> Пресеты
+                </a>
                 <a class="nav-link{{ ' active' if request.endpoint == 'main.logs' else '' }}"{% if request.endpoint == 'main.logs' %} aria-current="page"{% endif %} href="{{ url_for('main.logs') }}">
                     <i class="bi bi-journal-text"></i> Логи
                 </a>

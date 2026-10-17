@@ -108,7 +108,17 @@ class JobStore:
         with self._connect() as db:
             db.execute('BEGIN IMMEDIATE')
             db.execute("UPDATE encode_requests SET state = 'interrupted' WHERE state = 'processing'")
-            jobs = [Job.from_record(json.loads(row['record'])) for row in db.execute('SELECT record FROM jobs')]
+            jobs = []
+            for row in db.execute('SELECT id, record FROM jobs'):
+                try:
+                    job = Job.from_record(json.loads(row['record']))
+                except (ValueError, TypeError, KeyError):
+                    # Одна повреждённая запись не блокирует историю и диагностику.
+                    job = Job(id=row['id'], filename='Повреждённая запись задания',
+                              original_path='', ffmpeg_params={},
+                              preset_snapshot={'legacy': True}, status=JobStatus.ERROR,
+                              error_message='Не удалось восстановить запись задания')
+                jobs.append(job)
             for job in jobs:
                 if job.status in (JobStatus.PLANNED, JobStatus.IN_PROGRESS):
                     job.status = JobStatus.ERROR

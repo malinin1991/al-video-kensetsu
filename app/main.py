@@ -13,6 +13,7 @@ _log = logging.getLogger(__name__)
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024 * 1024  # 16GB максимум
+app.config['PRESET_EDITOR_PUBLIC_ORIGIN'] = os.getenv('PRESET_EDITOR_PUBLIC_ORIGIN', '')
 
 # Настройка CORS для Flask
 from flask_cors import CORS
@@ -124,6 +125,11 @@ log_manager.set_emit_callback(_emit_log_update)
 
 # Регистрируем маршруты
 app.register_blueprint(main_bp)
+from app.preset_routes import preset_editor_bp
+from app.preset_catalog import CatalogError
+from app.routes import _preset_error_response
+app.register_blueprint(preset_editor_bp)
+app.register_error_handler(CatalogError, _preset_error_response)
 
 # Устанавливаем воркер в routes
 from app.routes import restore_jobs, set_ffmpeg_worker

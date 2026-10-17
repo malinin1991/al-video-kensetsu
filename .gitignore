@@ -89,6 +89,7 @@ coverage.xml
 .tox/
 
 # Runtime data
+/presets/
 settings/
 /data/
 app_settings.json

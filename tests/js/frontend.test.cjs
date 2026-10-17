@@ -179,7 +179,7 @@ test('one encoding parameter snapshot is reused across a batch and all chunks', 
     assert.deepEqual(received, Array(4).fill('Original nickname'));
 });
 
-test('unchecked Opus VBR is sent exactly once as false', () => {
+test('explicit disabled Opus VBR is sent exactly once as false', () => {
     const { context, elements } = frontend();
     // Минимальная модель FormData(form), в том числе исходный битрейт в форме.
     context.FormData = class extends FormData {
@@ -197,7 +197,7 @@ test('unchecked Opus VBR is sent exactly once as false', () => {
     elements.audioCodec = Object.assign(element(), { value: 'opus' });
     elements.audioBitrate = Object.assign(element(), { value: '160k' });
     elements.audioSampleRate = Object.assign(element(), { value: '48000' });
-    elements.audioVbr = Object.assign(element(), { checked: false });
+    elements.audioVbr = Object.assign(element(), { tagName: 'SELECT', value: 'false' });
     context.syncAudioDownmixField = () => {};
     const parameters = context.captureEncodingParameters();
     assert.deepEqual(parameters.getAll('audio_vbr'), ['false']);

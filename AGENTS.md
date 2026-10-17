@@ -28,9 +28,23 @@
   `original_path`. `request_id` резервируется до копирования; готовый ответ
   неизменяем. GET квитанции — `/api/internal/encode/requests/<request_id>`;
   `processing`/`interrupted` дают 202, конфликт параметров — 409.
-- `presets/` содержит слои video/audio/subtitles/data; в каждом ровно один default.
-  Default video — `hevc_auto_level_rip` без фиксированных x265 level/ref.
-  YAML загружаются при импорте; после изменений нужен restart.
+- `app/builtin_presets/` — read-only поставка video/audio/subtitles/data с одним
+  default на слой. Default video — `hevc_auto_level_rip` без фиксированных level/ref.
+  Пользовательские записи/полные override/defaults — отдельный JSON
+  `USER_PRESETS_PATH` (абсолютный путь, default `/app/settings/presets/catalog.json`).
+  `/presets` и `/api/preset-editor` применяют изменения без рестарта к новым Jobs;
+  If-Match защищает от перезаписи, один immutable snapshot используется на операцию.
+  Не писать runtime данные в builtin и не восстанавливать повреждённый store пустым.
+  За HTTPS reverse proxy явно задавать `PRESET_EDITOR_PUBLIC_ORIGIN`; forwarded
+  заголовки не расширяют доверенные origins, CSRF token остаётся обязательным.
+- Перед первым обновлением с legacy YAML нужен backup старых `presets/` и settings
+  **до git pull/смены контейнера**. Offline `python -m app.preset_migration`
+  preview/apply проверяет digest/revision, restore — SHA256 текущего файла;
+  команды выполняются при остановленном сервере. Сохранять прежний том settings.
+- Job хранит `preset_snapshot` с историческими label/provenance отдельно от
+  `ffmpeg_params`; старую историю не resolve заново. Chunk manifest фиксирует
+  параметры первой принятой части, последующие не перечитывают изменённый каталог.
+  Новые файлы browser batch с устаревшим catalog_revision получают 409.
 - `hevc_remux` тоже перекодирует видео. Remux и правила метаданных реализованы
   отдельно в `app/mkvmerge_remux.py`; FFmpeg metadata flags не заменяют этот этап.
 - `update_metadata=true` использует partial → remux tmp → атомарный итоговый MKV.

@@ -17,6 +17,7 @@ services:
       # Папка для готовых копий (запись); также задайте INTERNAL_OUTPUT_ROOTS=/exports:
       # - ./data/exports:/exports
       - logs:/app/logs
+      # Сохранённые пресеты, настройки и история; сохраняйте этот том при обновлении.
       - settings:/app/settings
       - ffmpeg_bin:/app/ffmpeg
       # Свои ffmpeg/ffprobe: положите bin/ffmpeg и bin/ffprobe и раскомментируйте:
@@ -26,8 +27,6 @@ services:
       # - ./data/outputs:/app/outputs
       # - ./data/logs:/app/logs
       # - ./data/settings:/app/settings
-      # Пресеты встроены в образ; раскомментируйте для переопределения с хоста:
-      # - ./presets:/app/presets
     environment:
       - FLASK_ENV=production
       - PYTHONPATH=/app
@@ -40,6 +39,7 @@ services:
       - TZ=Asia/Novosibirsk
       - CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http://172.18.0.1:3000,http://pc13.local:3000,http://*.local:3000
       - SOCKETIO_ASYNC_MODE=threading
+      - PRESET_EDITOR_PUBLIC_ORIGIN=${PRESET_EDITOR_PUBLIC_ORIGIN:-}
       - INTERNAL_OUTPUT_ROOTS=${INTERNAL_OUTPUT_ROOTS-/anilibria}
     restart: unless-stopped
     healthcheck:

@@ -11,7 +11,6 @@ services:
       - test_logs:/app/logs
       - test_settings:/app/settings
       - test_ffmpeg:/app/ffmpeg
-      - ./presets:/app/presets
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
     environment:
@@ -23,6 +22,7 @@ services:
       - TZ=Europe/Moscow
       - CORS_ORIGINS=http://localhost:5001,http://127.0.0.1:5001,http://172.18.0.1:5001,http://pc13.local:5001,http://*.local:5001
       - SOCKETIO_ASYNC_MODE=threading
+      - PRESET_EDITOR_PUBLIC_ORIGIN=${PRESET_EDITOR_PUBLIC_ORIGIN:-}
     restart: "no"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]

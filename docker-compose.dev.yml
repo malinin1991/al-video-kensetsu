@@ -11,10 +11,10 @@ services:
       # - /mnt/user/anilibria:/anilibria:ro
       - outputs:/app/outputs
       - logs:/app/logs
+      # Сохранённые пресеты, настройки и история; сохраняйте этот том при обновлении.
       - settings:/app/settings
       - data:/app/data
       - ffmpeg_bin:/app/ffmpeg
-      - ./presets:/app/presets
       - ./app:/app/app  # Монтируем код для разработки
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
@@ -32,6 +32,7 @@ services:
       - TZ=Asia/Novosibirsk
       - CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http://172.18.0.1:3000,http://pc13.local:3000,http://*.local:3000
       - SOCKETIO_ASYNC_MODE=threading
+      - PRESET_EDITOR_PUBLIC_ORIGIN=${PRESET_EDITOR_PUBLIC_ORIGIN:-}
       - INTERNAL_SOURCE_ROOTS=/anilibria
     restart: unless-stopped
     healthcheck:

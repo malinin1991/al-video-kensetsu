@@ -16,6 +16,8 @@ uploads/
 outputs/
 logs/
 data/
+settings/
+presets/
 *.log
 
 # Env-файлы (секреты не попадают в образ)

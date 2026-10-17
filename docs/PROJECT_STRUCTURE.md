@@ -25,6 +25,16 @@ app/
 ├── file_utils.py
 ├── settings_store.py
 ├── job_store.py
+├── preset_schema.py
+├── preset_store.py
+├── preset_catalog.py
+├── preset_routes.py
+├── preset_migration.py
+├── builtin_presets/
+│   ├── video/
+│   ├── audio/
+│   ├── subtitles/
+│   └── data/
 ├── logger.py
 ├── log_manager.py
 ├── models/
@@ -37,6 +47,7 @@ app/
 │   ├── base.html
 │   ├── index.html
 │   ├── settings.html
+│   ├── presets.html
 │   ├── logs.html
 │   └── systeminfo.html
 └── static/
@@ -44,6 +55,7 @@ app/
     │   ├── common.js
     │   ├── socket.js
     │   ├── upload.js
+    │   ├── presets.js
     │   ├── logs.js
     │   └── socket.io.min.js
     └── css/
@@ -78,7 +90,9 @@ app/
   `{stem}_[HEVC]_{id[:8]}.mkv`; `get_download_filename()` возвращает готовое имя
   `{stem}_[HEVC].mkv` для API, скачивания и серверной копии.
   JSON включает точный внешний `input_path`,
-  `request_id` и вычисляемую доступность финального файла. Рабочие пути
+  `request_id`, `preset_snapshot` с историческими подписями/происхождением
+  и вычисляемую доступность финального файла. Worker читает сохранённые
+  `ffmpeg_params`; изменение каталога не меняет уже принятые задания. Рабочие пути
   `original_path`/`output_path` и SHA256 остаются только во внутренней записи.
 - [`app/job_store.py`](../app/job_store.py) — SQLite заданий и квитанций
   internal encode: `jobs`, `encode_requests`, `request_jobs`. Атомарная резервация
@@ -87,10 +101,26 @@ app/
   `recover()` при старте помечает незавершённые запросы `interrupted`, а задания
   `planned`/`in_progress` — `error`; повторного запуска нет.
 - [`app/models/presets.py`](../app/models/presets.py) — модели четырёх слоёв,
-  чтение YAML, defaults, объединение параметров и валидация downmix.
-  Глобальный `preset_manager` создаётся при импорте. При отсутствующем или пустом
-  слое создаёт встроенные пресеты. Другие заполненные слои не перезаписывает;
-  при восстановлении пустого слоя может заменить одноимённые пустые YAML.
+  объединение параметров, валидация downmix, `CatalogSnapshot` и стабильный
+  фасад `preset_manager`. HTTP-операции берут один снимок; runtime defaults
+  не зависят от старых импортированных констант. Генератор YAML остаётся
+  для явно переданного тестового/разработческого каталога, в поставку не пишет.
+- [`app/preset_catalog.py`](../app/preset_catalog.py) — загрузка read-only
+  builtin, полные override/custom, defaults, immutable снимки, fingerprint,
+  сравнение поставки, CRUD и preview/import под одним RLock. Legacy чтение
+  собирает диагностику всех проблемных файлов с относительными путями.
+- [`app/preset_store.py`](../app/preset_store.py) — отдельный пользовательский
+  JSON по `USER_PRESETS_PATH`, атомарный tempfile/fsync/replace, последние
+  20 backups и диагностика повреждённой/несовместимой схемы.
+- [`app/preset_schema.py`](../app/preset_schema.py) — нормализация полей четырёх
+  слоёв, безопасный YAML/JSON с запретом дублей, типы, лимиты и canonical hash.
+- [`app/preset_routes.py`](../app/preset_routes.py) — blueprint страницы
+  `/presets` и `/api/preset-editor`: версии If-Match, JSON, Origin/CSRF,
+  явный публичный origin за reverse proxy, reset/defaults/экспорт и проверяемый
+  импорт; событие после commit.
+- [`app/preset_migration.py`](../app/preset_migration.py) — offline CLI
+  preview/apply сохранённых legacy YAML, архив точного источника/отчёта
+  и restore проверенного backup с сохранением повреждённого оригинала.
 - [`app/internal_source.py`](../app/internal_source.py) — проверка разрешённых
   путей через `realpath`, снятие внешних кавычек, копирование из хранилища
   в uploads и выделение собственного исходника каждому заданию. Защищает
@@ -138,6 +168,10 @@ app/
   этого шаблона. Подключает `upload.js` и `logs.js`.
 - [`settings.html`](../app/templates/settings.html) — `/settings`: лимит
   параллельности, inline JS для `GET` / `PUT /api/settings`.
+- [`presets.html`](../app/templates/presets.html) — `/presets`: четыре слоя,
+  формы редактирования, сравнение поставки, defaults, импорт/экспорт;
+  подключает [`presets.js`](../app/static/js/presets.js). CSRF token страницы
+  привязан к серверной сессии, не входит в экспорт.
 - [`logs.html`](../app/templates/logs.html) — `/logs`: системный поток,
   выбор задания, пауза, обновление, очистка и таблица заданий; подключает `logs.js`.
 - [`systeminfo.html`](../app/templates/systeminfo.html) — `/systeminfo`:
@@ -153,11 +187,15 @@ app/
   откат статуса/прогресса устаревшим ответом. При недоступном Socket.IO опрашивает
   REST каждые 5 секунд без перекрытия запросов; скрытая вкладка не опрашивается.
   Показывает статус соединения в навигации; после connect прекращает polling.
+  `presets_updated` уведомляет страницы о новой версии каталога; при потере
+  события используется сверка версии через HTTP.
 - [`upload.js`](../app/static/js/upload.js) — отправка файлов и пути хранилища,
   прогресс загрузки. Небольшие файлы отправляет через XHR; большие — частями
   по 4 MiB через fetch с повторами. `addFormDataToFormData()` добавляет параметры,
   в том числе поля, расположенные вне `ffmpegForm`. Параметры фиксируются на всю
   отправку; частичный batch оставляет для повтора только непринятые файлы.
+  В отправку явно входит `catalog_revision`; уже начатый chunk upload сохраняет
+  параметры в серверном manifest, новые файлы со старой версией получают конфликт.
 - [`logs.js`](../app/static/js/logs.js) — загрузка `/api/logs` и `/api/logs/jobs`,
   фильтрация `log_update` по потоку/заданию, пауза и очистка. На главной странице
   инициализация прекращается, поскольку DOM страницы логов отсутствует.
@@ -176,8 +214,11 @@ JS зависит от глобальных функций и идентифик
 
 ## Пресеты
 
-[`presets/`](../presets) содержит четыре независимых слоя. В каждом нужен
-ровно один `default: true`; некорректные defaults препятствуют запуску.
+[`app/builtin_presets/`](../app/builtin_presets) содержит четыре независимых
+поставляемых слоя. В каждом ровно один `default: true`; приложение не создаёт
+и не меняет runtime YAML в этом каталоге. Пользовательские изменения через
+`/presets` и `/api/preset-editor` хранятся отдельно в
+`/app/settings/presets/catalog.json` (`USER_PRESETS_PATH`).
 
 - `video/`: `hevc_auto_level_rip.yaml` — default, без заданного x265 level/ref;
   `hevc_rip.yaml` — с фиксированными level/ref;
@@ -185,20 +226,31 @@ JS зависит от глобальных функций и идентифик
   Все три кодируют видео; имя `hevc_remux` не означает копирование видеопотока.
 - `audio/`: `copy.yaml` — default; `opus.yaml`, `aac.yaml`, `aac_fdk.yaml`,
   `none.yaml`. Доступность FDK зависит от сборки FFmpeg.
-- `subtitles/`: `copy.yaml` — default; `none.yaml`. Отдельного выбора в UI нет.
+- `subtitles/`: `copy.yaml` — default; `none.yaml`. Есть редактор/default слоя,
+  отдельного выбора на отправляемое задание нет.
 - `data/`: `copy.yaml` — default; `none.yaml`. В текущем mapping это вложения
-  (`0:t?`, `-c:t`), например шрифты. Отдельного выбора в UI нет.
+  (`0:t?`, `-c:t`), например шрифты. Есть редактор/default слоя,
+  отдельного выбора на отправляемое задание нет.
 
-`audio_id=none` отключает также субтитры и вложения. `audio_downmix=stereo`
+Пресет без аудио по codec/map отключает также субтитры и вложения, независимо
+от своего ID. `audio_downmix=stereo`
 требует перекодирования аудио, несовместим с `copy` / `none`.
-Изменения YAML подхватываются после перезапуска; HTTP endpoint перезагрузки нет.
-При отсутствующем каталоге video генератор в `models/presets.py` создаёт все
-три стандартных пресета с тем же default `hevc_auto_level_rip`.
+Изменения редактора применяются без рестарта к новым Jobs. Полный override
+под тем же ID сохраняет все пользовательские значения при обновлении builtin;
+сброс явно принимает текущую поставку. Defaults хранятся отдельно от определений:
+`null` наследует default поставки, строка закрепляет ID. Если база исчезла,
+её override остаётся работоспособным. Снимок заменяется целиком после атомарной
+записи user JSON; читатели не видят частично перезагруженные словари.
+Повреждённое пользовательское состояние не заменяется пустым: новые Jobs
+блокируются до offline восстановления, история остаётся доступной.
+
+Перед первым переходом старые `presets/` и `settings` архивируются **до обновления**.
+CLI и порядок переноса — [DEVELOPMENT.md](DEVELOPMENT.md#перенос-старых-пресетов-и-восстановление).
 
 ## Запуск и инфраструктура
 
 - [`docker/Dockerfile`](../docker/Dockerfile) — Python 3.15.0, runtime зависимости,
-  MKVToolNix CLI и каталоги данных; копирует приложение и пресеты. Тесты и pytest
+  MKVToolNix CLI и каталоги данных; копирует `app/` вместе с builtin. Тесты и pytest
   в образ не включаются. FFmpeg скачивается после сборки, при запуске.
   `LANG` и `LC_ALL` явно заданы `C.UTF-8`: это необходимо MKVToolNix для
   корректной обработки кириллических путей.
@@ -208,7 +260,7 @@ JS зависит от глобальных функций и идентифик
 - [`docker/entrypoint.sh`](../docker/entrypoint.sh) — PATH, bootstrap FFmpeg,
   `FFMPEG_BOOTSTRAPPED=1` и выполнение `CMD` (`python run.py`).
 - [`docker-compose.yml`](../docker-compose.yml) — основной запуск с локальной
-  сборкой, порт `3000:5000`, named volumes и bind-mount пресетов.
+  сборкой, порт `3000:5000`, named volumes; пользовательские пресеты в settings.
 - [`docker-compose.dev.yml`](../docker-compose.dev.yml) — дополнительно
   монтирует `app/`; `run.py` задаёт `debug=False`, поэтому автоматического
   Python reload этот вариант не включает.
@@ -222,8 +274,8 @@ JS зависит от глобальных функций и идентифик
   для `linux/amd64` и `linux/arm64`.
 - [`docker-compose.registry.yml`](../docker-compose.registry.yml) и
   [`docker-compose.registry.windows.yml`](../docker-compose.registry.windows.yml)
-  — готовый образ из registry, `pull_policy: always`; пресеты берутся из образа,
-  если не включён дополнительный bind-mount.
+  — готовый образ из registry, `pull_policy: always`; builtin берутся из образа,
+  пользовательский JSON — из прежнего постоянного тома settings.
 - [`docker-compose.unraid.yml`](../docker-compose.unraid.yml) — фрагмент
   сервиса с путями `/mnt/user/appdata/...`; его нужно включить в `services:`
   полноценного Compose файла.
@@ -264,6 +316,10 @@ JS зависит от глобальных функций и идентифик
    Если передан `request_id`, SQLite резервирует его до проверки параметров
    и копирования. Повтор возвращает сохранённую квитанцию либо 202;
    несовпадающий отпечаток даёт 409.
+   Каталог берётся одним снимком. Если клиент передал устаревший
+   `catalog_revision`, новое encode получает 409; готовая квитанция возвращается
+   до новой проверки каталога. Первая принятая часть chunk upload фиксирует
+   params/provenance в `upload.json`; последующие части не вызывают новый resolve.
 3. `create_job_from_saved_file()` выделяет собственный исходник, вычисляет SHA256,
    создаёт `Job`, сохраняет в SQLite, добавляет его в `jobs_storage` и очередь.
    Внешний `input_path` не заменяется временной копией. Копирование и хеширование
@@ -288,7 +344,8 @@ JS зависит от глобальных функций и идентифик
 
 События Socket.IO: `job_update` передаёт сериализованный Job,
 `progress_update` — `job_id` и `progress`, `log_update` — поток, job ID,
-сообщение, timestamp и уровень. Готовность результата определяет `status=done`:
+сообщение, timestamp и уровень; `presets_updated` — `catalog_revision`
+после сохранения редактора. Готовность результата определяет `status=done`:
 100% прогресса FFmpeg может предшествовать завершению remux.
 Процент приблизительный: при отсутствии `NUMBER_OF_FRAMES` используется
 оценка длительности 7200 секунд, а при `time=N/A` — также 30 fps.
@@ -306,6 +363,12 @@ JS зависит от глобальных функций и идентифик
   `JOB_STORE_PATH` независимо от `APP_SETTINGS_PATH`. Том settings сохраняет
   идемпотентность после замены контейнера. Нужен доступ на запись к каталогу
   базы и служебным SQLite файлам.
+- `/app/settings/presets/catalog.json` — полные пользовательские версии,
+  собственные пресеты, defaults и отметки миграции. Абсолютный путь задаёт
+  `USER_PRESETS_PATH`, независимо от остальных settings env. Рядом `backups/`
+  (последние 20 состояний), `legacy_archives/` (точные YAML/отчёты),
+  `recovery/` (сохранённый оригинал при restore). Это пользовательские данные,
+  они исключены из Git/build context и сохраняются с прежним томом settings.
 - `/app/data` — дополнительный каталог, в том числе legacy источник настроек.
   `settings_store.py` также читает старые настройки из `/app/logs`.
 - `/app/ffmpeg/bin` — FFmpeg и ffprobe в томе `ffmpeg_bin`;
@@ -343,6 +406,9 @@ FFmpeg и mkvmerge запускаются отдельными процесса�
 - [`EXAMPLES.md`](../EXAMPLES.md) — пользовательские сценарии и параметры.
 - [`docs/API.md`](API.md) — контракт HTTP API для интеграций.
 - [`docs/DEVELOPMENT.md`](DEVELOPMENT.md) — разработка, конфигурация и тесты.
+- [`docs/PRESET_EDITOR_SPEC.md`](PRESET_EDITOR_SPEC.md) — исходное ТЗ редактора,
+  отдельного пользовательского хранилища и безопасного обновления;
+  действующие команды/контракты приведены в DEVELOPMENT/API.
 - [`WINDOWS_SETUP.md`](../WINDOWS_SETUP.md) — запуск через Docker Desktop.
 - [`MULTIARCH.md`](../MULTIARCH.md) — архитектуры и сборка образов.
 - [`WEBSOCKET_TROUBLESHOOTING.md`](../WEBSOCKET_TROUBLESHOOTING.md) — диагностика Socket.IO.

@@ -1,5 +1,12 @@
 let uploadInProgress = false;
 
+function uploadResponseError(result, status) {
+    const error = new Error(result.error || `Ошибка загрузки: статус ${status}`);
+    error.status = status; error.code = result.code;
+    if (result.code === 'preset_catalog_changed') window.presetCatalogStale = true;
+    return error;
+}
+
 // Ждем загрузки DOM
 if (window.isDevelopment) {
     console.log('upload.js загружен');
@@ -50,6 +57,10 @@ document.addEventListener('DOMContentLoaded', function() {
     uploadForm.addEventListener('submit', async (e) => {
         e.preventDefault();
         if (uploadInProgress) return;
+        if (window.presetResolvePending || window.presetCatalogStale || window.presetCatalogUnavailable || window.presetUnavailable) {
+            showAlert('warning', 'Примените доступные профили из актуального каталога перед отправкой.');
+            return;
+        }
         if (window.isDevelopment) {
             console.log('Форма отправлена!');
         }
@@ -119,11 +130,15 @@ function setupSourceModeToggle() {
 
 function setUploadBusy(busy) {
     uploadInProgress = busy;
+    window.encodingUploadBusy = busy;
     ['sourceModeDevice', 'sourceModeStorage', 'fileInput', 'storagePathInput', 'uploadBtn'].forEach((id) => {
         const element = document.getElementById(id);
         if (element) element.disabled = busy;
     });
-    if (!busy) applySourceMode();
+    if (!busy) {
+        applySourceMode();
+        if (typeof window.updatePresetSubmitAvailability === 'function') window.updatePresetSubmitAvailability();
+    }
 }
 
 function applySourceMode() {
@@ -336,6 +351,11 @@ async function uploadMultipleFiles(files, chunkSize, parameters = captureEncodin
 
         } catch (error) {
             failedFiles.push(file);
+            if (error.code === 'preset_catalog_changed') {
+                failedFiles.push(...files.slice(i + 1));
+                showAlert('warning', error.message);
+                break;
+            }
             console.error(`Ошибка загрузки файла ${file.name}:`, error);
             showAlert('danger', `Не принят ${file.name}: ${error.message || 'ошибка загрузки'}`);
         }
@@ -405,7 +425,7 @@ async function uploadFilesBatch(files, progressCallback, parameters) {
                 return;
             }
 
-            reject(new Error(result.error || `Ошибка загрузки: статус ${xhr.status}`));
+            reject(uploadResponseError(result, xhr.status));
         });
 
         xhr.addEventListener('error', () => {
@@ -459,7 +479,7 @@ async function uploadFileDirectly(file, progressCallback, parameters) {
             } else {
                 try {
                     const result = JSON.parse(xhr.responseText);
-                    reject(new Error(result.error || 'Ошибка загрузки файла'));
+                    reject(uploadResponseError(result, xhr.status));
                 } catch (error) {
                     reject(new Error(`Ошибка загрузки: статус ${xhr.status}`));
                 }
@@ -542,9 +562,10 @@ async function uploadFileInChunks(file, chunkSize, progressCallback, parameters 
                     
                     success = true;
                 } else {
-                    throw new Error(result.error || 'Ошибка загрузки чанка');
+                    throw uploadResponseError(result, response.status);
                 }
             } catch (error) {
+                if (error.status === 409) throw error;
                 attempts++;
                 console.error(`Ошибка загрузки чанка ${chunkNumber} (попытка ${attempts}):`, error);
                 
@@ -575,6 +596,7 @@ function addFormDataToFormData(formData, parameters) {
     // audio_downmix живёт вне #ffmpegForm (в шапке карточки);
     // video_id/audio_id — hidden в форме + selects в шапке
     syncAudioDownmixField();
+    if (window.presetCatalogRevision) formData.set('catalog_revision', window.presetCatalogRevision);
     const videoSelect = document.getElementById('videoSelect');
     const audioSelect = document.getElementById('audioSelect');
     if (videoSelect && videoSelect.value) {
@@ -621,6 +643,10 @@ function addFormDataToFormData(formData, parameters) {
         formData.append('metadata_video_title', metadataVideoTitle.value.trim());
     }
     
+    // Пустой tri-state VBR означает авто: параметр не отправляется даже при
+    // ручном изменении другого поля. Убираем также исходное значение FormData.
+    formData.delete('audio_vbr');
+
     // Добавляем дополнительные настройки аудио если они видимы
     const audioSettings = document.getElementById('audioSettings');
     if (audioSettings && audioSettings.style.display !== 'none') {
@@ -635,11 +661,9 @@ function addFormDataToFormData(formData, parameters) {
         if (audioSampleRate) {
             formData.set('audio_sample_rate', audioSampleRate.value);
         }
-        const isOpus = audioCodec && (audioCodec.value === 'opus' || audioCodec.value === 'libopus');
-        if (isOpus) {
-            formData.set('audio_vbr', audioVbr && audioVbr.checked ? 'true' : 'false');
-        } else if (audioVbr && audioVbr.checked) {
-            formData.set('audio_vbr', 'true');
+        if (audioVbr && audioCodec && !['copy', 'remove', ''].includes(audioCodec.value)) {
+            const vbr = audioVbr.value;
+            if (vbr === 'true' || vbr === 'false') formData.set('audio_vbr', vbr);
         }
     }
 }

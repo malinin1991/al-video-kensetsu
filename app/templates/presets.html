@@ -1,0 +1,77 @@
+{% extends 'base.html' %}
+{% block title %}Редактор пресетов{% endblock %}
+{% block content %}
+<div id="presetEditor" data-csrf-token="{{ csrf_token }}">
+    <div class="d-flex flex-wrap justify-content-between gap-2 align-items-start mb-3">
+        <div><h1 class="h3">Редактор пресетов</h1>
+            <p class="text-body-secondary mb-0">Ваши версии хранятся отдельно от поставки и сохраняются при обновлении приложения.</p></div>
+        <button id="editorRefresh" class="btn btn-outline-secondary" type="button">Обновить каталог</button>
+    </div>
+    <div id="editorStatus" class="alert alert-secondary" role="status" aria-live="polite">Загрузка пресетов…</div>
+    <div id="editorWarnings" class="mb-3"></div>
+    <div class="row g-4">
+        <aside class="col-12 col-lg-4">
+            <label class="form-label" for="editorLayer">Слой</label>
+            <select id="editorLayer" class="form-select mb-3">
+                <option value="video">Видео</option><option value="audio">Аудио</option>
+                <option value="subtitles">Субтитры</option><option value="data">Вложения</option>
+            </select>
+            <label class="visually-hidden" for="editorSearch">Найти пресет</label>
+            <input id="editorSearch" type="search" class="form-control mb-3" placeholder="Название или ID">
+            <div class="d-flex flex-wrap gap-2 mb-3">
+                <button id="editorNew" type="button" class="btn btn-primary">Создать пресет</button>
+                <button id="editorSystemDefault" type="button" class="btn btn-outline-secondary">Default поставки</button>
+            </div>
+            <div id="editorList" class="list-group"></div>
+        </aside>
+        <section class="col-12 col-lg-8" aria-labelledby="editorTitle">
+            <h2 class="h4" id="editorTitle">Выберите пресет</h2>
+            <p id="editorOrigin" class="text-body-secondary text-break"></p>
+            <div id="editorConflict" class="alert alert-warning" hidden>
+                <p>Каталог изменился. Ваш черновик сохранён. Сравните поля с текущей версией перед сохранением.</p>
+                <button id="editorCompare" type="button" class="btn btn-sm btn-outline-dark">Сравнить с текущей</button>
+                <button id="editorAcceptRevision" type="button" class="btn btn-sm btn-outline-dark" hidden>Продолжить с моими полями</button>
+                <div id="editorCurrentComparison" class="mt-2 text-break"></div>
+            </div>
+            <form id="editorForm" hidden>
+                <fieldset id="editorFields"></fieldset>
+                <div class="form-check my-3">
+                    <input id="editorSetDefault" class="form-check-input" type="checkbox">
+                    <label class="form-check-label" for="editorSetDefault">Использовать по умолчанию в этом слое</label>
+                </div>
+                <p class="form-text">Изменения применяются к новым заданиям. Параметры и подписи созданных заданий сохраняются.</p>
+                <div class="d-flex flex-wrap gap-2">
+                    <button type="submit" id="editorSave" class="btn btn-primary">Сохранить</button>
+                    <button type="button" id="editorCopy" class="btn btn-outline-primary">Сохранить как новый</button>
+                    <button type="button" id="editorReset" class="btn btn-outline-secondary">Сбросить к поставке</button>
+                    <button type="button" id="editorDelete" class="btn btn-outline-danger">Удалить</button>
+                </div>
+            </form>
+            <section id="editorDiffSection" class="mt-4" hidden>
+                <h3 class="h5">Сравнение с поставкой</h3><div id="editorDifferences" class="text-break"></div>
+            </section>
+        </section>
+    </div>
+    <section class="border-top mt-4 pt-4" aria-labelledby="editorTransferTitle">
+        <h2 class="h4" id="editorTransferTitle">Резервная копия и перенос</h2>
+        <p class="text-body-secondary">Экспорт содержит ваши пресеты и выбор defaults. Сохраните файл на другом диске для защиты от потери тома settings.</p>
+        <a href="/api/preset-editor/export" class="btn btn-outline-primary mb-3">Скачать пользовательский каталог</a>
+        <div class="row g-3 align-items-end">
+            <div class="col-12 col-md-5"><label class="form-label" for="editorImportFile">Каталог JSON</label>
+                <input id="editorImportFile" type="file" accept=".json,application/json" class="form-control"></div>
+            <div class="col-12 col-md-4"><label for="editorImportMode" class="form-label">Способ импорта</label>
+                <select id="editorImportMode" class="form-select"><option value="merge">Добавить без перезаписи</option>
+                    <option value="replace_user_catalog">Заменить пользовательский каталог</option></select></div>
+            <div class="col-12 col-md-3"><button id="editorPreviewImport" type="button" class="btn btn-outline-primary">Проверить импорт</button></div>
+        </div>
+        <div class="form-check my-3"><input id="editorImportDefaults" type="checkbox" class="form-check-input">
+            <label for="editorImportDefaults" class="form-check-label">Также перенести явный выбор defaults при добавлении</label></div>
+        <div id="editorImportPreview" class="text-break" role="status" aria-live="polite"></div>
+        <button id="editorApplyImport" type="button" class="btn btn-warning mt-2" hidden>Применить проверенный импорт</button>
+        <p class="form-text mt-3">Для переноса старых YAML сначала сделайте внешнюю копию до обновления. Миграция и восстановление повреждённого каталога выполняются отдельной командой при остановленном сервере.</p>
+    </section>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/presets.js') }}"></script>
+{% endblock %}

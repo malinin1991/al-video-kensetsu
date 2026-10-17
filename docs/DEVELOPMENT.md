@@ -19,8 +19,10 @@ docker compose up --build
 docker compose -f docker-compose.dev.yml up --build
 ```
 
-В этом варианте `app/` и `presets/` берутся из checkout. `run.py` явно задаёт
-`debug=False`: после изменения Python или YAML перезапустите процесс контейнера.
+В этом варианте `app/`, включая read-only поставку `app/builtin_presets/`,
+берётся из checkout. `run.py` явно задаёт `debug=False`: после изменения Python
+или встроенных YAML перезапустите процесс контейнера. Пользовательские изменения
+через `/presets` применяются к новым Jobs сразу и хранятся в томе `settings`.
 Пересборка нужна при изменении зависимостей, Dockerfile или файлов, копируемых
 в образ без bind-mount.
 
@@ -67,16 +69,158 @@ python -m pip install -r requirements.txt -r requirements-dev.txt
 
 Пути загрузок, результатов, логов и настроек можно вынести в доступные локальные
 каталоги через `UPLOADS_DIR`, `OUTPUTS_DIR`, `LOG_DIR`, `APP_SETTINGS_PATH`,
-`JOB_STORE_PATH`. Например, после подготовки бинарников:
+`JOB_STORE_PATH`, `USER_PRESETS_PATH`. Например, после подготовки бинарников:
 
 ```bash
 UPLOADS_DIR="$PWD/uploads" OUTPUTS_DIR="$PWD/outputs" LOG_DIR="$PWD/logs" \
 APP_SETTINGS_PATH="$PWD/settings/app_settings.json" \
-JOB_STORE_PATH="$PWD/settings/jobs.sqlite3" python run.py
+JOB_STORE_PATH="$PWD/settings/jobs.sqlite3" \
+USER_PRESETS_PATH="$PWD/settings/presets/catalog.json" python run.py
 ```
 
 Каждый модуль создаёт используемый каталог по фактическому пути. Воркер создаёт
 outputs перед кодированием; `main.py` не пытается создавать фиксированные `/app/*`.
+
+## Перенос старых пресетов и восстановление
+
+### До первого обновления на редактор
+
+Это порядок перехода со старых редактируемых YAML, а не автоматическое
+восстановление уже потерянных правок. **Архивируйте фактически используемый
+`presets/` и весь `settings` до `git pull`, смены образа или пересоздания старого
+контейнера.** Дождитесь завершения заданий и остановите сервер. Резервную папку
+создайте вне checkout и контейнера, сохраните также текущий commit/тег образа.
+
+Прямой Python/Linux/macOS, из старого checkout (пути settings при необходимости
+замените фактическими значениями env):
+
+```bash
+PRESET_BACKUP_DIR="$HOME/al-video-kensetsu-before-preset-editor"
+mkdir -p "$PRESET_BACKUP_DIR"
+cp -a presets "$PRESET_BACKUP_DIR/presets"
+cp -a settings "$PRESET_BACKUP_DIR/settings"
+ls "$PRESET_BACKUP_DIR/presets" "$PRESET_BACKUP_DIR/settings"
+git rev-parse HEAD
+```
+
+Docker: копируйте из ещё существующего старого контейнера. Так сохраняется
+использовавшийся каталог и при bind-mount, и при YAML внутри старого образа:
+
+```bash
+PRESET_BACKUP_DIR="$HOME/al-video-kensetsu-before-preset-editor"
+mkdir -p "$PRESET_BACKUP_DIR"
+docker compose stop video-encoder
+docker compose cp video-encoder:/app/presets "$PRESET_BACKUP_DIR/presets"
+docker compose cp video-encoder:/app/settings "$PRESET_BACKUP_DIR/settings"
+ls "$PRESET_BACKUP_DIR/presets" "$PRESET_BACKUP_DIR/settings"
+```
+
+Используйте тот же `-f`, `--env-file` и Compose project name, с которыми запущена
+установка. Для Unraid сохраните `/mnt/user/appdata/al-web-video-encoder/settings`
+и выгрузите `/app/presets` из старого контейнера через `docker cp` до замены образа.
+PowerShell-команды приведены в [WINDOWS_SETUP.md](../WINDOWS_SETUP.md#первый-переход-на-редактор-пресетов).
+Проверьте содержимое копии. Только после этого обновляйте checkout/образ.
+Если Git сообщает о локальных изменениях старых YAML, не разрешайте конфликт
+с потерей правок до проверки внешнего архива: именно из него выполняется перенос.
+
+### Preview и применение старого YAML
+
+Новая поставка находится в `app/builtin_presets/`. Старую папку не монтируйте
+поверх неё: мигратор явно читает сохранённый источник. Утилиты запускаются
+**при остановленном сервере**, без импорта `app.main` и запуска воркера.
+
+Прямой Python, уже из обновлённого checkout:
+
+```bash
+export USER_PRESETS_PATH="$PWD/settings/presets/catalog.json"
+python -m app.preset_migration preview --source "$PRESET_BACKUP_DIR/presets"
+python -m app.preset_migration apply --source "$PRESET_BACKUP_DIR/presets" \
+  --preview-digest 'PREVIEW_DIGEST' --if-match 'CATALOG_REVISION'
+```
+
+Вместо `PREVIEW_DIGEST` и `CATALOG_REVISION` подставьте значения `preview_digest`
+и `catalog_revision` из успешного preview. Просмотр не записывает данные;
+он показывает файлы, defaults, предупреждения и конфликты. Apply повторно
+проверяет источник и версию назначения. Если что-то изменилось, повторите preview.
+При ошибках `preview`/`apply` возвращают код `legacy_validation_failed` и JSON
+`fields.sources` со списком всех проблемных файлов: относительный `path`, `error`
+и `fields` с диагностикой поля. Проверяются все четыре слоя, включая дубли ID,
+неоднозначные defaults, невалидный YAML и UTF-8. Частичного импорта нет.
+
+Docker: сначала соберите новый образ (`docker compose build video-encoder`)
+либо загрузите его через registry Compose. Затем выполните:
+
+```bash
+docker compose run --rm --no-deps --entrypoint python \
+  -v "$PRESET_BACKUP_DIR/presets:/legacy-presets:ro" video-encoder \
+  -m app.preset_migration preview --source /legacy-presets
+docker compose run --rm --no-deps --entrypoint python \
+  -v "$PRESET_BACKUP_DIR/presets:/legacy-presets:ro" video-encoder \
+  -m app.preset_migration apply --source /legacy-presets \
+  --preview-digest 'PREVIEW_DIGEST' --if-match 'CATALOG_REVISION'
+```
+
+Команды используют прежний том `settings`. Не выполняйте `down -v` и не меняйте
+имя проекта без явного подключения старого тома. После успешного apply запускайте
+обычный сервер и проверьте `/presets` перед новой отправкой видео.
+
+Переносятся полные определения всех четырёх слоёв и явные defaults. Пропущенные
+codec/map получают семантику старого loader: audio `copy/0:a?`, subtitles
+`copy/0:s?`, data `copy/0:t?`; video optional остаются `null`. Совпадающие ID
+становятся полными override, остальные — custom с прежними ID. Без эталона
+старой версии нельзя достоверно отделить старые стандартные настройки от правок,
+поэтому сохраняется весь действовавший каталог. Позже ненужный override можно
+сбросить в редакторе.
+
+Архив точных YAML и отчёт сохраняются рядом с user store в `legacy_archives/`;
+исходник не изменяется. Повтор apply того же источника не создаёт новую revision.
+Дубли, неподдерживаемые поля и неоднозначные defaults останавливают перенос
+целиком. При конфликтах с уже существующим user store ничего не перезаписывается;
+используйте проверяемый импорт/merge/полную замену в редакторе после просмотра
+и резервной копии.
+
+### Экспорт, backup и offline restore
+
+Редактор экспортирует пользовательский JSON; для переноса на другую установку
+сначала выполните preview импорта. `merge` сохраняет существующие записи/defaults
+и отказывается от конфликтов, `replace_user_catalog` заменяет пользовательское
+состояние целиком после подтверждения. Подробности — [API редактора](API.md#редактор-пресетов).
+Экспорт храните также вне диска с Docker volumes. Он не включает SQLite/видео.
+
+Перед каждой записью сохраняется предыдущее валидное состояние в
+`settings/presets/backups/`, удерживаются последние 20 копий. Сбой очистки старых
+копий записывается в журнал; успешное сохранение основного каталога остаётся
+успешным и сразу отражается в памяти. При повреждении
+JSON/неподдерживаемой схеме приложение не заменяет данные пустым каталогом:
+новые задания блокируются, история и диагностика доступны. Восстановление
+выполняйте с остановленным сервером и проверенным backup. SHA256 относится
+именно к текущему повреждённому файлу, чтобы не заменить изменившиеся данные:
+
+```bash
+export USER_PRESETS_PATH="$PWD/settings/presets/catalog.json"
+shasum -a 256 "$USER_PRESETS_PATH"
+python -m app.preset_migration restore \
+  --backup "$PWD/settings/presets/backups/BACKUP.json" \
+  --target-digest 'SHA256_CURRENT_FILE'
+```
+
+На Linux вместо `shasum -a 256` можно использовать `sha256sum`. В Docker:
+
+```bash
+docker compose stop video-encoder
+docker compose run --rm --no-deps --entrypoint sha256sum video-encoder \
+  /app/settings/presets/catalog.json
+docker compose run --rm --no-deps --entrypoint python video-encoder \
+  -m app.preset_migration restore \
+  --backup /app/settings/presets/backups/BACKUP.json \
+  --target-digest 'SHA256_CURRENT_FILE'
+```
+
+Подставьте имя проверенной копии и полученный SHA256. Restore валидирует backup
+с текущей поставкой, сохраняет исходный файл в `recovery/<uuid>.original`,
+пишет новую UUID revision атомарно. Ошибка проверки оставляет основной файл
+прежним. После восстановления перезапустите сервер. Неизвестная новая схема
+не очищается старым релизом; для отката нужен совместимый backup.
 
 ## Выбор Python 3.15 и оптимизации
 
@@ -196,6 +340,21 @@ Python не читает `.env` самостоятельно. При локал�
   (внутренние результаты) и `INTERNAL_SOURCE_ROOTS` (чтение исходников).
 - `APP_SETTINGS_PATH` — `app/settings_store.py`;
   default `/app/settings/app_settings.json`.
+- `USER_PRESETS_PATH` — абсолютный путь пользовательского каталога;
+  default `/app/settings/presets/catalog.json`. Для локального Python задайте
+  доступный путь явно. Независим от `APP_SETTINGS_PATH` и `JOB_STORE_PATH`.
+  Каталог родителя содержит backups, legacy_archives и recovery; он должен
+  быть доступен на запись и сохраняться при обновлении. Встроенные YAML
+  `app/builtin_presets/` приложение не изменяет. Поддерживается один процесс;
+  ручная правка JSON при работающем сервере не поддерживается.
+- `PRESET_EDITOR_PUBLIC_ORIGIN` — необязательный публичный origin редактора,
+  например `https://encoder.example`, если reverse proxy завершает HTTPS перед
+  HTTP контейнером. Задайте в `.env` для Compose или env локального Python.
+  Допускается один http(s) адрес с необязательным портом, без пути, userinfo,
+  query/fragment и пробелов. Конечный `/` и стандартный порт нормализуются.
+  Он дополняет прямой origin, но не отменяет session CSRF token. Произвольные
+  `X-Forwarded-*` не принимаются за подтверждение origin. Неверный конфиг блокирует
+  браузерные записи с `503 invalid_public_origin`; CLI без Origin сохраняет свой контракт.
 - `JOB_STORE_PATH` — `app/job_store.py`; default `/app/settings/jobs.sqlite3`.
   Задания и квитанции internal encode сохраняются в SQLite (stdlib, без новой
   зависимости). Для локального запуска задайте доступный путь, например
@@ -306,7 +465,22 @@ python -m pytest -q tests/test_presets_resolve.py
 ```
 
 - `tests/test_presets_resolve.py` — YAML слои, defaults, merge, optional поля,
-  fallback пресеты и совместимость downmix.
+  генератор для изолированных тестовых каталогов и совместимость downmix.
+- `tests/test_preset_store.py` — отдельный JSON, атомарная запись, backups
+  и повреждённое состояние; `tests/test_preset_catalog.py` — полные override,
+  defaults, версии, обновление поставки и проверяемый импорт.
+- `tests/test_preset_editor_api.py` — CRUD/defaults/reset, If-Match, Origin/CSRF
+  (включая явный HTTPS origin за proxy) и import preview;
+  `tests/test_preset_migration.py` — offline перенос YAML, полная диагностика
+  файлов, изменение источника во время apply и restore;
+  `tests/test_preset_integration.py` — Job snapshot, динамические
+  defaults и фиксация параметров chunk upload.
+- `tests/test_preset_persistence.py` — сохранение пользовательского каталога
+  через настоящий `git pull` во временном репозитории; opt-in Docker тест
+  пересоздаёт контейнеры с обновлённым builtin и прежним тестовым named volume
+  либо bind-mount settings. Каждый сценарий проверяется для записей редактора
+  и перенесённых legacy YAML, включая архивы и отметку миграции.
+  Боевой checkout и том settings не используются.
 - `tests/test_batch_presets_api.py` — API пресетов, доступность FDK,
   валидация, batch upload/internal, частичный успех и поля system-info.
 - `tests/test_internal_encode.py` — пути, кавычки, разрешённые корни, symlinks,
@@ -354,6 +528,19 @@ RUN_REAL_MEDIA_TESTS=1 python -m pytest -q tests/test_real_media.py
 
 Тест сам генерирует синтетическое видео длительностью одну секунду во временном
 каталоге. Пути бинарников можно передать через соответствующие env.
+Проверка сохранности при настоящем `git pull` выполняется обычным pytest
+в изолированном локальном репозитории. Для opt-in пересоздания Docker-контейнера
+нужны Docker daemon и собранный из текущих исходников образ:
+
+```bash
+docker build -f docker/Dockerfile -t al-web-video-encoder:preset-editor-qa .
+RUN_DOCKER_PRESET_TESTS=1 PRESET_TEST_IMAGE=al-web-video-encoder:preset-editor-qa \
+  python -m pytest -q tests/test_preset_persistence.py
+```
+
+Docker тест создаёт отдельный временный том либо папку settings и производный
+образ и удаляет тестовый том/образ после проверки; не направляйте его на боевые данные. Эти команды описывают
+порядок проверки и сами по себе не являются отчётом о её прохождении.
 Импорт `app.main` создаёт воркер и лог-файлы;
 для изоляции используйте временные пути и подменяйте воркер в API тестах.
 
@@ -375,6 +562,48 @@ Windows `Makefile.windows` сохраняет отдельный старый с
 [cdn.socket.io](https://cdn.socket.io/4.7.4/socket.io.min.js), MIT license рядом
 в `socket.io.LICENSE`. После обновления проверьте синтаксис (`node --check`)
 и frontend тесты. Bootstrap/Icons по-прежнему подключаются с CDN.
+
+## Проверка редактора пресетов 18 октября 2026
+
+После исправлений независимого ревью локально на Python 3.13:
+**480 passed, 7 skipped**; JavaScript на Node.js 26: **47 passed**.
+В изолированном контейнере Python 3.15.0: **478 passed, 9 skipped**.
+Обычный pytest пропускает четыре Docker-сценария и три медиатеста;
+контейнер дополнительно пропускает два Git-сценария из-за отсутствия Git.
+Git и Docker выполнены отдельно на хосте.
+
+`RUN_DOCKER_PRESET_TESTS=1 ... tests/test_preset_persistence.py`:
+**6 passed** — настоящий `git pull` во временном репозитории, пересоздание
+контейнеров с новым образом и прежним named volume, то же с bind-mount settings.
+Все три сценария выполнены как для записей редактора, так и для перенесённых YAML.
+Проверены неизменность полного пользовательского JSON, ID/параметров/defaults,
+архивов/отметки миграции, обновление встроенной версии и предупреждение об изменении базы override.
+Боевые каталоги, Git-ветки и контейнеры не использовались.
+
+При первичной проверке до этого ревью прошли три настоящих медиатеста:
+HEVC + Copy 5.1, Opus stereo с MKVToolNix,
+а также пользовательский пресет, изменённый после создания задания:
+encode и историческая подпись используют исходный снимок. Собран финальный
+Dockerfile и проверены страница `/presets`, создание пресета и default через API
+внутри образа. Восемь полных Compose-конфигураций проходят `docker compose config`;
+Unraid остаётся документированным фрагментом сервиса.
+
+В браузере проверены создание/default, сохранение после перезапуска сервера,
+применение default на главной и обновление из второй вкладки без потери ручного
+ввода. На редакторе при ширинах 395 и 1280 px ширина документа совпадает
+с viewport. Проверены относительные ссылки документации и `git diff --check`.
+
+Независимый ревьюер повторно воспроизвёл и проверил исправления: сбой retention
+после commit не оставляет память позади диска; источник миграции сверяется
+с исходным preview на всех стадиях; ошибки всех файлов выводятся вместе.
+Поздние ответы не стирают черновики/актуальный выбор; временный сетевой сбой
+снимается без сброса полей; VBR auto не превращается в false при custom edit.
+Явный public HTTPS origin работает при внутреннем Host контейнера, без доверия
+к forwarded headers. **81 целевой Python-тест и все 47 JS-тестов** прошли
+в независимом повторном прогоне; неразрешённых P1/P2 не обнаружено.
+В дополнительном браузерном smoke сохранён и повторно открыт пользовательский
+Opus default с VBR «Авто»; на главной форме изменение только CRF сохраняет «Авто».
+Использовался отдельный временный каталог данных и HTTP fallback на тестовом порту.
 
 ## Результаты ревью 17 октября 2026
 
@@ -421,8 +650,12 @@ MKVToolNix — **2/2 passed**, включая отсутствие времен�
 - Новый параметр FFmpeg: модель/merge в `app/models/presets.py`, чтение формы
   в `app/routes.py`, команда в `app/ffmpeg_worker.py`, поля и inline применение
   пресетов в `index.html`, сбор FormData в `upload.js`.
-- Новый пресет: YAML соответствующего слоя; при новом поле также модель/merge.
-  Сохраните единственный default в каждом слое.
+- Пользовательский пресет: `/presets` или `/api/preset-editor`.
+  Встроенный пресет: YAML в `app/builtin_presets/<layer>/`, единственный
+  default в каждом слое. Новое поле требует схемы `preset_schema.py`,
+  модели/merge, редактора и главной формы. Store и сравнение поставки —
+  `preset_store.py`/`preset_catalog.py`; HTTP — `preset_routes.py`;
+  перенос старых YAML — offline `preset_migration.py`.
 - Метаданные и дорожки: `app/mkvmerge_remux.py`; порядок процессов и финализация
   — `app/ffmpeg_worker.py`. Stereo downmix — `app/audio_downmix.py`.
 - Очередь, параллельность, отмена: `app/ffmpeg_worker.py`; настройки лимита

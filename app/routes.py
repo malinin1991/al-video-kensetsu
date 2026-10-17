@@ -18,11 +18,10 @@ import uuid
 import zipfile
 import re
 import threading
+import copy
 from app.models.job import Job, JobStatus, utc_now
 from app.job_store import get_job_store
 from app.models.presets import (
-    DEFAULT_AUDIO_ID,
-    DEFAULT_VIDEO_ID,
     preset_manager,
     validate_audio_downmix_for_params,
 )
@@ -77,6 +76,49 @@ jobs_storage = {}
 ffmpeg_worker = None
 # Фиксированный набор lock не растёт вместе с числом законченных загрузок.
 _chunk_upload_locks = tuple(threading.Lock() for _ in range(64))
+
+
+class EncodingParams(dict):
+    """Параметры worker и отдельное происхождение, без служебных ключей в argv."""
+
+    def __init__(self, params, preset_snapshot=None):
+        super().__init__(params)
+        self.preset_snapshot = copy.deepcopy(preset_snapshot)
+
+
+class PresetRequestError(ValueError):
+    def __init__(self, message, code, status=409):
+        super().__init__(message)
+        self.code = code
+        self.status = status
+
+
+def _request_catalog(source):
+    catalog = preset_manager.snapshot()
+    expected = source.get('catalog_revision')
+    if expected is not None and expected != catalog.catalog_revision:
+        raise PresetRequestError(
+            'Каталог пресетов изменился. Примените актуальные настройки перед отправкой.',
+            'preset_catalog_changed',
+        )
+    return catalog
+
+
+def _selection_metadata(catalog, video_id, audio_id, downmix):
+    if video_id == 'custom' or audio_id == 'custom':
+        return {'label': 'Пользовательский' + (' · stereo downmix' if downmix == 'stereo' else ''),
+                'catalog_revision': catalog.catalog_revision, 'layers': {}}
+    return catalog.selection_snapshot(video_id, audio_id, downmix)
+
+
+def _preset_error_response(exc):
+    return jsonify({'error': str(exc), 'code': getattr(exc, 'code', 'invalid_preset'),
+                    'fields': getattr(exc, 'fields', {})}), getattr(exc, 'status', 400)
+
+
+@main_bp.app_errorhandler(PresetRequestError)
+def preset_request_error(exc):
+    return _preset_error_response(exc)
 
 
 def _request_object_or_error():
@@ -320,7 +362,7 @@ def upload_file():
             try:
                 _validate_chunk_metadata(file_id, chunk_number, total_chunks)
             except ValueError as exc:
-                return jsonify({'error': str(exc)}), 400
+                return _preset_error_response(exc)
             return handle_chunk_upload(request, file_id, int(chunk_number), int(total_chunks))
         else:
             # Это полный файл (старый способ)
@@ -440,6 +482,34 @@ def _validate_chunk_metadata(file_id, chunk_number, total_chunks):
         raise ValueError('Нужны 1 <= total_chunks <= 100000 и 0 <= chunk_number < total_chunks')
 
 
+def _upload_parameter_fingerprint(form):
+    fields = ('video_id', 'audio_id', 'audio_downmix', 'preset_modified', 'catalog_revision',
+              'video_map', 'audio_map', 'subtitle_map', 'data_map', 'video_codec',
+              'audio_codec', 'subtitle_codec', 'data_codec', 'preset', 'crf',
+              'pixel_format', 'x265_params', 'tune', 'output_format', 'audio_bitrate',
+              'audio_sample_rate', 'audio_vbr', 'cpu_threads', 'thread_queue_size',
+              'x265_pools', 'update_metadata', 'metadata_nickname', 'metadata_video_title')
+    values = {key: form.getlist(key) for key in fields if key in form}
+    return hashlib.sha256(json.dumps(values, sort_keys=True, ensure_ascii=False,
+                                    separators=(',', ':')).encode('utf-8')).hexdigest()
+
+
+def _write_upload_manifest(path, manifest):
+    pending_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', dir=os.path.dirname(path),
+                                         encoding='utf-8', delete=False) as pending:
+            pending_path = pending.name
+            json.dump(manifest, pending, ensure_ascii=False)
+            pending.flush()
+            os.fsync(pending.fileno())
+        os.replace(pending_path, path)
+        pending_path = None
+    finally:
+        if pending_path:
+            cleanup_file(pending_path)
+
+
 def handle_chunk_upload(request, file_id, chunk_number, total_chunks):
     """Записывает чанк атомарно; операции одного upload сериализованы."""
     pending_path = None
@@ -453,22 +523,36 @@ def handle_chunk_upload(request, file_id, chunk_number, total_chunks):
         filename = request.form.get('filename', '')
         if not allowed_file(filename):
             return jsonify({'error': 'Неподдерживаемый тип файла'}), 400
-        parsed, err = _ffmpeg_params_or_error(request)
-        if err is not None:
-            return err
-
         with _chunk_upload_locks[hash(file_id) % len(_chunk_upload_locks)]:
             temp_dir = os.path.join(get_uploads_dir(), f'temp_{file_id}')
-            ensure_directory_exists(temp_dir)
             manifest_path = os.path.join(temp_dir, 'upload.json')
-            manifest = {'filename': filename, 'total_chunks': total_chunks}
+            fingerprint = _upload_parameter_fingerprint(request.form)
+            new_manifest = not os.path.exists(manifest_path)
             if os.path.exists(manifest_path):
                 with open(manifest_path, encoding='utf-8') as handle:
-                    if json.load(handle) != manifest:
-                        return jsonify({'error': 'file_id уже используется для другой загрузки'}), 409
+                    manifest = json.load(handle)
+                if manifest.get('filename') != filename or manifest.get('total_chunks') != total_chunks:
+                    return jsonify({'error': 'file_id уже используется для другой загрузки'}), 409
+                if manifest.get('schema_version') != 2 or 'encoding' not in manifest:
+                    return jsonify({'error': 'Начните загрузку заново под новым ID: параметры старой загрузки не сохранены',
+                                    'code': 'upload_snapshot_missing'}), 409
+                if manifest.get('parameter_fingerprint') != fingerprint:
+                    return jsonify({'error': 'Параметры этого file_id отличаются от первой принятой части',
+                                    'code': 'upload_parameters_conflict'}), 409
+                encoding = manifest['encoding']
+                parsed = (EncodingParams(encoding['params'], encoding.get('preset_snapshot')),
+                          encoding['video_id'], encoding['audio_id'], encoding['audio_downmix'])
             else:
-                with open(manifest_path, 'w', encoding='utf-8') as handle:
-                    json.dump(manifest, handle, ensure_ascii=False)
+                parsed, err = _ffmpeg_params_or_error(request)
+                if err is not None:
+                    return err
+                params, vid, aid, downmix = parsed
+                manifest = {'schema_version': 2, 'filename': filename, 'total_chunks': total_chunks,
+                            'parameter_fingerprint': fingerprint,
+                            'encoding': {'params': dict(params), 'video_id': vid, 'audio_id': aid,
+                                         'audio_downmix': downmix,
+                                         'preset_snapshot': getattr(params, 'preset_snapshot', None)}}
+                ensure_directory_exists(temp_dir)
 
             chunk_path = os.path.join(temp_dir, f'chunk_{chunk_number:04d}')
             with tempfile.NamedTemporaryFile(dir=temp_dir, delete=False) as pending:
@@ -481,6 +565,8 @@ def handle_chunk_upload(request, file_id, chunk_number, total_chunks):
             )
             if limit is not None and stored_size + os.path.getsize(pending_path) > limit:
                 return jsonify({'error': 'Превышен максимальный размер файла'}), 413
+            if new_manifest:
+                _write_upload_manifest(manifest_path, manifest)
             os.replace(pending_path, chunk_path)
             pending_path = None
             logger.upload_logger.info(f'Чанк {chunk_number}/{total_chunks} сохранен: {chunk_path}')
@@ -492,7 +578,7 @@ def handle_chunk_upload(request, file_id, chunk_number, total_chunks):
                 'completed': False,
             })
     except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+        return _preset_error_response(exc)
     except RequestEntityTooLarge:
         return jsonify({'error': 'Превышен максимальный размер загрузки'}), 413
     except Exception as exc:
@@ -652,8 +738,9 @@ def get_ffmpeg_params_from_request(request):
     Returns:
         (params, video_id, audio_id, audio_downmix)
     """
-    video_id = request.form.get('video_id', DEFAULT_VIDEO_ID) or DEFAULT_VIDEO_ID
-    audio_id = request.form.get('audio_id', DEFAULT_AUDIO_ID) or DEFAULT_AUDIO_ID
+    catalog = _request_catalog(request.form)
+    video_id = request.form.get('video_id') or catalog.default_video_id
+    audio_id = request.form.get('audio_id') or catalog.default_audio_id
     downmix_raw = request.form.get('audio_downmix', 'none')
     preset_modified = request.form.get('preset_modified', 'false') == 'true'
     is_custom = (
@@ -664,7 +751,7 @@ def get_ffmpeg_params_from_request(request):
 
     if not is_custom:
         params, video_id, audio_id, audio_downmix, _video, audio = (
-            preset_manager.resolve_request(video_id, audio_id, downmix_raw)
+            catalog.resolve_request(video_id, audio_id, downmix_raw)
         )
         _ensure_fdk_available(audio)
         logger.main_logger.info(
@@ -693,7 +780,7 @@ def get_ffmpeg_params_from_request(request):
     params.update(_encoding_resource_params(request.form))
     params.update(_get_metadata_params(request))
 
-    return params, video_id, audio_id, audio_downmix
+    return EncodingParams(params, _selection_metadata(catalog, video_id, audio_id, audio_downmix)), video_id, audio_id, audio_downmix
 
 
 def _ensure_fdk_available(audio) -> None:
@@ -718,15 +805,15 @@ def _ffmpeg_params_or_error(request):
     try:
         return get_ffmpeg_params_from_request(request), None
     except ValueError as exc:
-        return None, (jsonify({'error': str(exc)}), 400)
+        return None, _preset_error_response(exc)
 
 
 def create_job_from_saved_file(
     file_path,
     filename,
     ffmpeg_params,
-    video_id=DEFAULT_VIDEO_ID,
-    audio_id=DEFAULT_AUDIO_ID,
+    video_id=None,
+    audio_id=None,
     audio_downmix='none',
     *,
     input_path=None,
@@ -760,6 +847,7 @@ def create_job_from_saved_file(
             original_path=bound_path,
             file_hash=file_hash,
             ffmpeg_params=dict(ffmpeg_params),
+            preset_snapshot=copy.deepcopy(getattr(ffmpeg_params, 'preset_snapshot', None)),
             video_id=video_id,
             audio_id=audio_id,
             audio_downmix=audio_downmix,
@@ -781,8 +869,8 @@ def process_single_video_file(
     file_path,
     filename,
     ffmpeg_params,
-    video_id=DEFAULT_VIDEO_ID,
-    audio_id=DEFAULT_AUDIO_ID,
+    video_id=None,
+    audio_id=None,
     audio_downmix='none',
 ):
     """Общая функция для обработки одиночного видео файла"""
@@ -803,8 +891,8 @@ def handle_single_video_upload(
     file,
     filename,
     ffmpeg_params,
-    video_id=DEFAULT_VIDEO_ID,
-    audio_id=DEFAULT_AUDIO_ID,
+    video_id=None,
+    audio_id=None,
     audio_downmix='none',
 ):
     """Обрабатывает загрузку одиночного видео файла"""
@@ -838,26 +926,27 @@ def handle_single_video_upload(
         return jsonify({'error': f'Ошибка загрузки файла: {str(e)}'}), 500
 
 
-def _resolve_preset_from_json(payload):
+def _resolve_preset_from_json(payload, catalog=None):
     """video_id + audio_id + downmix из JSON.
 
     Returns:
         (params, video_id, audio_id, audio_downmix, video, audio)
     """
+    catalog = catalog or _request_catalog(payload)
     video_raw = payload.get('video_id')
     if video_raw is None or str(video_raw).strip() == '':
         video_raw = payload.get('video')
     if video_raw is None or str(video_raw).strip() == '':
-        video_raw = DEFAULT_VIDEO_ID
+        video_raw = catalog.default_video_id
 
     audio_raw = payload.get('audio_id')
     if audio_raw is None or str(audio_raw).strip() == '':
         audio_raw = payload.get('audio')
     if audio_raw is None or str(audio_raw).strip() == '':
-        audio_raw = DEFAULT_AUDIO_ID
+        audio_raw = catalog.default_audio_id
 
     downmix_raw = payload.get('audio_downmix', 'none')
-    return preset_manager.resolve_request(
+    return catalog.resolve_request(
         str(video_raw).strip(),
         str(audio_raw).strip(),
         downmix_raw,
@@ -866,8 +955,9 @@ def _resolve_preset_from_json(payload):
 
 def _ffmpeg_params_from_json(payload):
     """Параметры FFmpeg для JSON API: video + audio + downmix + ник."""
+    catalog = _request_catalog(payload)
     params, video_id, audio_id, audio_downmix, _video, audio = (
-        _resolve_preset_from_json(payload)
+        _resolve_preset_from_json(payload, catalog)
     )
     _ensure_fdk_available(audio)
     if params.get('audio_codec') == 'opus':
@@ -899,7 +989,7 @@ def _ffmpeg_params_from_json(payload):
         'metadata_video_title': video_title,
         'audio_downmix': audio_downmix,
     })
-    return params, video_id, audio_id, audio_downmix
+    return EncodingParams(params, _selection_metadata(catalog, video_id, audio_id, audio_downmix)), video_id, audio_id, audio_downmix
 
 
 def _unwrap_flask_result(result):
@@ -1110,7 +1200,7 @@ def _execute_internal_encode(is_json, payload, request_id):
         try:
             paths, is_batch = _collect_internal_paths(is_json, payload, request)
         except ValueError as exc:
-            return jsonify({'error': str(exc)}), 400
+            return _preset_error_response(exc)
 
         if not paths:
             return jsonify({'error': 'Не указан path / paths'}), 400
@@ -1122,7 +1212,7 @@ def _execute_internal_encode(is_json, payload, request_id):
                     _ffmpeg_params_from_json(payload)
                 )
             except ValueError as exc:
-                return jsonify({'error': str(exc)}), 400
+                return _preset_error_response(exc)
         else:
             parsed, err = _ffmpeg_params_or_error(request)
             if err is not None:
@@ -1137,7 +1227,7 @@ def _execute_internal_encode(is_json, payload, request_id):
             paths[0], ffmpeg_params, video_id, audio_id, audio_downmix, request_id
         )
     except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+        return _preset_error_response(exc)
     except Exception as e:
         logger.upload_logger.error(f"Ошибка внутреннего кодирования: {e}")
         return jsonify({'error': f'Ошибка внутреннего кодирования: {str(e)}'}), 500
@@ -1431,48 +1521,44 @@ def stop_job(job_id):
 
 @main_bp.route('/api/presets')
 def api_presets():
-    """API: video + audio слои (subtitles/data — внутренние defaults)."""
-    videos = preset_manager.get_all_videos()
-    audios = preset_manager.get_all_audios()
+    """Совместимый каталог video/audio из одного неизменяемого снимка."""
+    catalog = preset_manager.snapshot()
     fdk_ok = has_libfdk_aac()
-    logger.main_logger.info(
-        f"API пресетов: {len(videos)} video, {len(audios)} audio"
-    )
-    videos_out = [v.to_dict() for v in videos]
-    audios_out = []
-    for audio in audios:
-        available = (not audio.uses_fdk_aac()) or fdk_ok
-        audios_out.append(audio.to_dict(available=available))
-    return jsonify({
-        'videos': videos_out,
-        'audios': audios_out,
-        'defaults': {
-            'video_id': preset_manager.default_video_id,
-            'audio_id': preset_manager.default_audio_id,
-            'audio_downmix': 'none',
-        },
+    response = jsonify({
+        'videos': [v.to_dict() for v in catalog.get_all_videos()],
+        'audios': [a.to_dict(available=not a.uses_fdk_aac() or fdk_ok)
+                   for a in catalog.get_all_audios()],
+        'defaults': {'video_id': catalog.default_video_id,
+                     'audio_id': catalog.default_audio_id, 'audio_downmix': 'none'},
+        'catalog_revision': catalog.catalog_revision,
     })
+    response.set_etag(catalog.catalog_revision)
+    response.headers['Cache-Control'] = 'no-cache'
+    return response
 
 
 @main_bp.route('/api/presets/resolve')
 def api_presets_resolve():
-    """Слитый ffmpeg_params для выбранных video_id + audio_id."""
-    video_id = request.args.get('video_id') or preset_manager.default_video_id
-    audio_id = request.args.get('audio_id') or preset_manager.default_audio_id
+    catalog = _request_catalog(request.args)
+    video_id = request.args.get('video_id') or catalog.default_video_id
+    audio_id = request.args.get('audio_id') or catalog.default_audio_id
+    downmix = request.args.get('audio_downmix', 'none')
     try:
-        params = preset_manager.resolve(video_id, audio_id, 'none')
+        params = catalog.resolve(video_id, audio_id, downmix)
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 404
-    video = preset_manager.get_video(video_id)
-    audio = preset_manager.get_audio(audio_id)
-    return jsonify({
-        'video_id': video_id,
-        'audio_id': audio_id,
-        'available': _audio_available(audio),
-        'video': video.to_dict() if video else None,
-        'audio': audio.to_dict(available=_audio_available(audio)) if audio else None,
-        'ffmpeg_params': params,
+    video = catalog.get_video(video_id)
+    audio = catalog.get_audio(audio_id)
+    provenance = catalog.selection_snapshot(video_id, audio_id, downmix)
+    response = jsonify({
+        'video_id': video_id, 'audio_id': audio_id, 'available': _audio_available(audio),
+        'video': video.to_dict(), 'audio': audio.to_dict(available=_audio_available(audio)),
+        'ffmpeg_params': params, 'catalog_revision': catalog.catalog_revision,
+        'preset_snapshot': provenance,
     })
+    response.set_etag(catalog.catalog_revision)
+    response.headers['Cache-Control'] = 'no-cache'
+    return response
 
 @main_bp.route('/api/logs')
 def api_logs():

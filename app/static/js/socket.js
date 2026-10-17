@@ -80,6 +80,7 @@ document.addEventListener('DOMContentLoaded', function() {
 window.socket.on('connect', () => {
     stopJobsPolling();
     setConnectionStatus('live');
+    if (typeof window.refreshPresetCatalog === 'function') window.refreshPresetCatalog();
     if (window.isDevelopment) {
         console.log('WebSocket подключен');
         console.log('Socket ID:', window.socket.id);
@@ -88,6 +89,10 @@ window.socket.on('connect', () => {
     // Загружаем задания при подключении
     loadJobsOnConnect();
     if (typeof window.refreshFallbackLogs === 'function') window.refreshFallbackLogs();
+});
+
+window.socket.on('presets_updated', () => {
+    if (typeof window.refreshPresetCatalog === 'function') window.refreshPresetCatalog();
 });
 
 window.socket.on('disconnect', () => {

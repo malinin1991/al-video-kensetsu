@@ -25,6 +25,7 @@ video-encoder:
     TZ: Asia/Novosibirsk
     CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000,http://*.mageek.home,https://*.mageek.su,http://192.168.1.254:3000
     SOCKETIO_ASYNC_MODE: threading
+    PRESET_EDITOR_PUBLIC_ORIGIN: ${PRESET_EDITOR_PUBLIC_ORIGIN:-}
     INTERNAL_SOURCE_ROOTS: /anilibria
     INTERNAL_OUTPUT_ROOTS: /anilibria
   healthcheck:

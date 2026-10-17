@@ -36,14 +36,19 @@ Default включает localhost/127.0.0.1 на портах 3000 (Compose) и
 
 ## Модель: независимые слои пресетов
 
-Четыре слоя YAML (`presets/<layer>/`), у каждого ровно один `default: true`:
+Поставка содержит четыре read-only слоя YAML (`app/builtin_presets/<layer>/`),
+у каждого ровно один `default: true`. Полные пользовательские версии, собственные
+пресеты и выбор defaults хранятся отдельно в `USER_PRESETS_PATH` (по умолчанию
+`/app/settings/presets/catalog.json`). Редактор `/presets` применяет их к новым
+заданиям без рестарта. При обновлении поставки пользовательская версия целиком
+сохраняется до явного сброса; старые Jobs используют сохранённые параметры.
 
 | Слой | Каталог | В UI/API | Дефолт |
 |------|---------|----------|--------|
-| **video** | `presets/video/` | да (`video_id`) | `hevc_auto_level_rip` |
-| **audio** | `presets/audio/` | да (`audio_id`) | `copy` |
-| **subtitles** | `presets/subtitles/` | нет (внутренний) | `copy` |
-| **data** | `presets/data/` | нет (внутренний) | `copy` |
+| **video** | `app/builtin_presets/video/` | выбор `video_id`, редактор | `hevc_auto_level_rip` |
+| **audio** | `app/builtin_presets/audio/` | выбор `audio_id`, редактор | `copy` |
+| **subtitles** | `app/builtin_presets/subtitles/` | редактор; encode берёт default | `copy` |
+| **data** | `app/builtin_presets/data/` | редактор; encode берёт default | `copy` |
 
 Плюс **`audio_downmix`**: `none` (по умолчанию) или `stereo`.
 
@@ -55,7 +60,7 @@ Default включает localhost/127.0.0.1 на портах 3000 (Compose) и
 | `hevc_auto_level_rip` | HEVC rip auto level | 23 | slow |
 | `hevc_remux` | HEVC remux | 21 | slower |
 
-Default — `hevc_auto_level_rip` (HEVC rip auto level). В нём отсутствует
+Default поставки — `hevc_auto_level_rip` (HEVC rip auto level). В нём отсутствует
 `x265_params`: level/ref выбирает сам x265. У `hevc_rip` и `hevc_remux`
 по-прежнему явно заданы `level=5.1:ref=6`.
 
@@ -69,7 +74,8 @@ Default — `hevc_auto_level_rip` (HEVC rip auto level). В нём отсутс�
 | `aac_fdk` | AAC FDK | libfdk_aac 192k |
 | `none` | None | без аудио |
 
-При `audio_id=none` resolve автоматически берёт `subtitles=none` и `data=none`.
+При отсутствии аудио по параметрам codec/map resolve автоматически берёт
+`subtitles=none` и `data=none`, включая пользовательские пресеты с другим ID.
 
 ### Subtitles / data (внутренние)
 
@@ -81,7 +87,7 @@ Default — `hevc_auto_level_rip` (HEVC rip auto level). В нём отсутс�
 - обычно `true`;
 - `false` у `aac_fdk`, если в FFmpeg нет `libfdk_aac`.
 
-Неизвестный `video_id` / `audio_id` → HTTP **400**.  
+Неизвестный `video_id` / `audio_id` при encode → HTTP **400**; при resolve — **404**.
 `audio_downmix=stereo` при `copy` / `none` → HTTP **400**.  
 Запрос `aac_fdk` без поддержки → HTTP **400**.
 
@@ -174,7 +180,8 @@ curl -s -X PUT http://localhost:5000/api/settings \
     "video_id": "hevc_auto_level_rip",
     "audio_id": "copy",
     "audio_downmix": "none"
-  }
+  },
+  "catalog_revision": "непрозрачный-sha256-каталога"
 }
 ```
 
@@ -185,6 +192,133 @@ curl -s http://localhost:5000/api/presets
 ### `GET /api/presets/resolve`
 
 Слитые параметры: `?video_id=hevc_remux&audio_id=opus`.
+Дополнительно принимает `audio_downmix` и необязательный `catalog_revision`.
+Возвращает `video_id`, `audio_id`, `available`, `video`, `audio`,
+`ffmpeg_params`, `catalog_revision`, `preset_snapshot`. В snapshot находятся
+ID/название/источник/fingerprint всех четырёх применённых слоёв и готовая подпись;
+в `ffmpeg_params` — фактические subtitles/data defaults. Nullable параметры
+не восстанавливают значения из предыдущего выбора браузера.
+
+Оба GET возвращают `ETag: "<catalog_revision>"`. Версия учитывает пользовательский
+каталог и встроенную поставку. Переданная устаревшая версия даёт **409**
+`preset_catalog_changed`; неизвестные ID сохраняют **404**.
+
+### Редактор пресетов
+
+Страница `/presets`, JSON API `/api/preset-editor`. Требуется один серверный
+процесс. Все записывающие методы и import preview принимают только
+`Content-Type: application/json`; даже reset/DELETE без дополнительных полей
+передают `{}`. Форматы video/audio/subtitles/data перечислены ниже.
+
+Перед изменением получите каталог или detail. Ответ содержит `catalog_revision`
+и сильный `ETag`; передайте **точный quoted** `If-Match: "<catalog_revision>"`.
+Отсутствие If-Match — **428**, устаревший/неверный/wildcard/weak ETag — **412**
+`catalog_revision_conflict`. Конкурирующая вкладка не перезаписывается.
+Успешное сохранение возвращает актуальную версию; операция без изменения данных
+оставляет прежнюю revision.
+
+Браузер отправляет same-origin запросы и `X-CSRF-Token` из HTML редактора,
+привязанный к сессии. Чужой/`null` Origin отклоняется с **403**.
+За HTTPS reverse proxy задайте `PRESET_EDITOR_PUBLIC_ORIGIN=https://encoder.example`:
+этот точный origin принимается вместе с прямым адресом сервера, с той же проверкой
+CSRF. Wildcard и список адресов запрещены; заголовки `X-Forwarded-*` не расширяют
+доверие. Неверная настройка даёт **503** `invalid_public_origin` при браузерной записи.
+CLI JSON без Origin использует те же схемы и If-Match; это не аутентификация.
+
+- `GET /api/preset-editor` — `{layers, defaults, selections, catalog_revision, warnings, storage}`.
+  `layers` содержит массивы четырёх слоёв; `defaults` — действующие ID;
+  `selections` — явные пользовательские ID либо `null` (default поставки).
+- `GET /api/preset-editor/<layer>/<id>` — `{id, name, definition, source, default, ...}`.
+  `source`: `builtin`, `override` или `custom`; также `available`, `orphaned`,
+  `builtin_changed`, `base_unknown`, `source_collision`, `current_builtin`,
+  `base_snapshot`, `differences`, `actions`, `catalog_revision`.
+- `POST /api/preset-editor/<layer>` — `{definition, set_default?}` → **201**,
+  detail и `Location`. Сервер назначает неизменяемый `user_*` ID.
+- `PUT /api/preset-editor/<layer>/<id>` — `{definition, set_default?}` → **200**.
+  Полностью заменяет определение; для builtin создаёт полный override под тем же
+  ID. Пропущенное optional поле очищается до `null`, частичного merge нет.
+  Неизвестный ID — **404**.
+- `POST /api/preset-editor/<layer>/<id>/reset` — `{}` → текущий builtin,
+  сохраняя default на тот же ID. Для custom/отсутствующей встроенной базы — **409**.
+- `DELETE /api/preset-editor/<layer>/<id>` — `{}` либо `{replacement_default_id}`.
+  Удаляет custom или override удалённой из поставки базы. Для удаляемого default
+  нужен другой существующий ID того же слоя; замена выполняется атомарно.
+  Обычные builtin/override не удаляются: **409**, используйте reset.
+- `PUT /api/preset-editor/defaults` — `{defaults: {video?, audio?, subtitles?, data?}}`.
+  Непустой набор меняется атомарно; строка выбирает ID, `null` возвращает default
+  поставки, пропущенные слои не меняются. Недоступный FDK нельзя назначить новым
+  default через этот метод; уже сохранённый выбор самопроизвольно не заменяется.
+- `GET /api/preset-editor/export` — attachment `presets-catalog.json`, только
+  пользовательское состояние и база override, без истории Jobs и путей источников.
+- `POST /api/preset-editor/import/preview` — `{catalog, mode, import_defaults?}`,
+  с If-Match. Без записи возвращает `additions`, `changes`, `conflicts`,
+  `default_changes`, `warnings`, `preview_digest`, `catalog_revision`.
+- `POST /api/preset-editor/import` — те же поля и `preview_digest`, с If-Match.
+  Preview обязателен для обоих режимов; digest связан с режимом, настройкой defaults,
+  целевой версией и кандидатом. Устаревший preview — **409** `preview_conflict`.
+
+В обоих import методах `catalog` принимает объект или строку исходного JSON.
+Для файла передавайте исходный текст строкой: сервер обнаружит дубли ключей,
+которые предварительный `JSON.parse` в браузере уже удалил бы.
+
+Импорт `mode=merge` добавляет записи; отличающиеся записи с тем же `(layer,id)`
+дают **409** `import_conflict` без частичной записи. Defaults сохраняются,
+если не передан `import_defaults=true`. С этим флагом принимаются явные строковые
+selections импорта; `null` не отменяет действующий выбор. Отличающийся существующий
+явный selection — конфликт. `mode=replace_user_catalog` целиком заменяет user state,
+включая selections `null`; требует отдельного подтверждения UI. `import_defaults`
+в этом режиме не используется. Revision экспортированного файла не становится
+новой серверной revision; изменение получает новый UUID. Повтор того же состояния
+без изменения данных — без новой revision. Legacy YAML переносятся offline CLI,
+HTTP API не принимает путь к файловой системе.
+
+`definition` содержит `name` (1–120), `description` (до 4000) и поля слоя.
+`id` и `default` в него не входят. Допустимые поля:
+
+- video: `video_codec=libx265`, `output_format=matroska`, `preset`, `crf`,
+  `pixel_format`, `x265_params`, `tune`, `video_map`;
+- audio: `codec`, `bitrate`, `sample_rate`, `vbr`, `audio_map`;
+- subtitles: `subtitle_codec`, `subtitle_map`; data: `data_codec`, `data_map`.
+
+CRF 0–51, bitrate 8–1536 kbit/s (canonical `160k`), sample_rate 8000–192000
+Hz, VBR boolean/null. Audio codec: copy/aac/libfdk_aac/libopus/null;
+`opus` нормализуется в libopus. Subtitle codec: copy/ass/srt/null; data: copy/null.
+У отключаемых дорожек codec/map заполняются вместе либо оба `null`;
+у copy/без аудио bitrate/sample_rate/vbr должны быть null. Карты только
+`0:v[:N][?]`, `0:a[:N][?]`, `0:s[:N][?]`, `0:t[:N][?]` своего слоя.
+Технические audio/subtitles/data `none` должны оставаться пустыми.
+`x265_params` — строка до 4096 символов, один аргумент без shell; семантические
+ошибки выявляются кодировщиком. Ресурсы, downmix и metadata в definition не входят.
+`preset`: ultrafast/superfast/veryfast/faster/fast/medium/slow/slower/veryslow/null;
+`pixel_format`: yuv420p/yuv420p10le/yuv444p10le/null;
+`tune`: animation/grain/psnr/ssim/fastdecode/zerolatency/null (`none` → null).
+Неизвестные поля, дубли ключей и управляющие символы отклоняются.
+Лимиты: 500 пользовательских записей, 5 MiB тела/каталога, 64 KiB определения.
+
+Главная форма показывает VBR как «Авто / Включён / Выключен». `vbr: null`
+сохраняется как «Авто»: при ручном изменении других настроек поле `audio_vbr`
+не передаётся, режим кодека не заменяется на false. Явные true/false передаются
+при custom encode без изменения.
+
+Пример CLI (вместо `ACTUAL_REVISION` подставьте SHA256 из GET):
+
+```bash
+curl -i http://localhost:5000/api/preset-editor
+curl -i -X POST http://localhost:5000/api/preset-editor/video \
+  -H 'Content-Type: application/json' \
+  -H 'If-Match: "ACTUAL_REVISION"' \
+  -d '{"definition":{"name":"Мой HEVC","video_codec":"libx265","output_format":"matroska","crf":"20","preset":"slow"}}'
+```
+
+Ошибки: `{error, code, fields, catalog_revision?}`. **400** — схема;
+**403** — Origin/CSRF; **404** — слой/ID; **409** — конфликт ID/default/import;
+**412** — версия; **413** — размер; **415** — Content-Type; **428** — нет If-Match;
+**503** — storage/corruption/unsupported schema/`save_result_unknown`.
+После `save_result_unknown` перечитайте каталог перед повтором: запись могла
+завершиться. Cold corruption не создаёт пустой каталог и блокирует новый encode;
+диагностический ответ не выдаёт выдуманный ETag. Offline восстановление описано
+в [DEVELOPMENT.md](DEVELOPMENT.md#перенос-старых-пресетов-и-восстановление).
+После commit Socket.IO отправляет `presets_updated: {catalog_revision}`.
 
 ---
 
@@ -195,9 +329,11 @@ curl -s http://localhost:5000/api/presets
 Поля:
 
 - `file` / `files` — видео (`.mp4`, `.mkv`);
-- `video_id` — по умолчанию default из YAML (`hevc_auto_level_rip`);
-- `audio_id` — по умолчанию `copy`;
+- `video_id` — текущий default effective каталога (поставка: `hevc_auto_level_rip`);
+- `audio_id` — текущий default effective каталога (поставка: `copy`);
 - `audio_downmix` — `none` \| `stereo` (по умолчанию `none`).
+- `catalog_revision` — необязательная версия применённого каталога; устаревшая
+  даёт **409** `preset_catalog_changed` до создания Jobs.
 
 ```bash
 curl -s -F "file=@/path/video.mkv" -F "video_id=hevc_remux" \
@@ -223,6 +359,13 @@ curl -s -F "file=@/path/video.mkv" -F "video_id=hevc_remux" \
   Отсутствующие/некорректные поля дают **400** до записи данных.
 - `filename` сохраняется как безопасное имя без каталога, как при полной загрузке.
 - Повторный ID с другим именем/количеством частей даёт **409**.
+- Первая принятая часть сохраняет в `upload.json` параметры и provenance.
+  Следующие части используют этот снимок без нового resolve, даже после изменения
+  или удаления пресета. Отличающиеся параметры того же `file_id` дают **409**
+  `upload_parameters_conflict`, старый manifest без снимка — **409**
+  `upload_snapshot_missing`. Части сохраняются; для старого manifest начните
+  загрузку под новым ID. Во всех частях передавайте одинаковые encoding/metadata/
+  resource-поля, включая присутствие/отсутствие `catalog_revision`.
 - Промежуточный успех: **200** с `completed: false`; отправка последней части
   запускает сборку. Если не хватает частей — **400**, принятые данные сохраняются.
   Для повтора отправьте отсутствующие части, затем снова последнюю.
@@ -230,6 +373,12 @@ curl -s -F "file=@/path/video.mkv" -F "video_id=hevc_remux" \
   неполный итоговый файл; части удаляются после успешного создания задания.
 - Лимит запроса и сумма частей одного файла ограничены `MAX_CONTENT_LENGTH`
   (16 GiB по умолчанию). Превышение возвращает JSON и **413**.
+
+Один серверный batch использует один snapshot. В браузерной пачке из нескольких
+HTTP-загрузок смена каталога блокирует начало следующих файлов со старой версией;
+уже начатые завершаются по своему manifest. Перед повтором непринятого остатка
+явно примените актуальный каталог. Старый API без `catalog_revision` по-прежнему
+поддерживается: snapshot выбирается при начале запроса/первой принятой части.
 
 ---
 
@@ -252,6 +401,11 @@ JSON:
 ```
 
 Алиасы полей: `video` ↔ `video_id`, `audio` ↔ `audio_id`.
+Если ID не указаны, выбираются текущие effective defaults. Необязательный
+`catalog_revision` фиксирует ожидаемую версию: для нового запроса устаревшая
+версия даёт **409** `preset_catalog_changed`. Вся серверная пачка использует
+один snapshot. При повторе завершённого `request_id` сначала возвращается
+сохранённая квитанция; новое состояние каталога её не изменяет.
 
 Пачка: `"paths": [...]` — ответ как у batch upload: `created` (число),
 `jobs`, `errors`; **200** при полном успехе, **207** при частичном,
@@ -541,9 +695,18 @@ curl -s -X POST http://localhost:5000/api/jobs/delete \
 | `audio_id` | id аудио-пресета или `custom` |
 | `audio_downmix` | `none` \| `stereo` |
 | `preset_label` | напр. `HEVC remux / Opus · stereo downmix` |
+| `preset_snapshot` | Сохранённые `catalog_revision`, `label`, `layers`; в каждом слое ID, name, source, fingerprint |
 | `ffmpeg_params` | словарь параметров FFmpeg |
 
-Subtitles/data ids в Job API не отдаются (подставляются при resolve).
+IDs фактически применённых subtitles/data находятся в `preset_snapshot.layers`,
+а не отдельными верхнеуровневыми полями. Без аудио snapshot содержит принудительные
+`none` этих слоёв. Worker использует только `ffmpeg_params`; переименование,
+сброс и удаление пресета не меняют параметры/подпись уже созданного Job.
+У разового custom задания snapshot содержит подпись и версию, `layers` пуст.
+Старые записи без исторических названий показывают сохранённые ID с пометкой
+о несохранённом названии; актуальные имена не выдаются за исторические.
+Повреждённые/отсутствующие сохранённые params не восстанавливаются через новый
+каталог: запись получает ошибку восстановления, остальные Jobs читаются.
 
 Доступность вычисляется при сериализации, через stat и проверку доступа;
 видео не читается и не хешируется. После удаления результата история сохраняет
@@ -566,8 +729,9 @@ Subtitles/data ids в Job API не отдаются (подставляются 
 | **207** | Batch: частичный успех (upload / internal encode / delete) |
 | **403** | Internal encode / серверное сохранение выключены; путь вне соответствующих roots; недостаточно прав на сохранение |
 | **404** | Задание / файл не найден |
-| **409** | request_id повторён с другими параметрами; конфликт chunk file_id; поток/процесс ещё останавливается; batch download: недоступные результаты (`missing[]`); серверное сохранение: целевое имя занято или совпадает с самим результатом |
+| **409** | request_id повторён с другими параметрами; устаревший catalog_revision; конфликт chunk file_id/параметров/старого manifest; поток/процесс ещё останавливается; batch download: недоступные результаты (`missing[]`); серверное сохранение: целевое имя занято или совпадает с самим результатом |
 | **413** | Превышен размер запроса или суммарный размер частей файла |
+| **503** | Каталог пресетов недоступен/повреждён; новое encode не может выбрать безопасные настройки |
 | **500** | Внутренняя ошибка |
 
 ---
@@ -576,8 +740,8 @@ Subtitles/data ids в Job API не отдаются (подставляются 
 
 ```text
 GET  /api/presets
-  → выбрать video_id + audio_id (available=true)
-POST /api/upload  (files + video_id + audio_id [+ audio_downmix])
+  → выбрать video_id + audio_id (available=true), сохранить catalog_revision
+POST /api/upload  (files + video_id + audio_id [+ audio_downmix, catalog_revision])
   или POST /api/internal/encode (paths + …)
 GET  /api/jobs/<id>
 GET  /api/jobs/<id>/download

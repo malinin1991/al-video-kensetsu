@@ -57,7 +57,7 @@ def _optional_str(data: dict, key: str, *, as_str: bool = False) -> str | None:
     return value
 
 
-@dataclass
+@dataclass(frozen=True)
 class VideoPreset:
     id: str
     name: str
@@ -112,7 +112,7 @@ class VideoPreset:
         )
 
 
-@dataclass
+@dataclass(frozen=True)
 class AudioPreset:
     id: str
     name: str
@@ -170,7 +170,7 @@ class AudioPreset:
         )
 
 
-@dataclass
+@dataclass(frozen=True)
 class SubtitlesPreset:
     id: str
     name: str
@@ -201,7 +201,7 @@ class SubtitlesPreset:
         )
 
 
-@dataclass
+@dataclass(frozen=True)
 class DataPreset:
     id: str
     name: str
@@ -380,18 +380,9 @@ class PresetManager:
     }
 
     def __init__(self, presets_dir: str | None = None):
+        self._development_generator = presets_dir is not None
         if presets_dir is None:
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            project_root = os.path.dirname(os.path.dirname(current_dir))
-            self.presets_dir = os.path.join(project_root, "presets")
-            if not os.path.exists(self.presets_dir):
-                cwd = os.path.join(os.getcwd(), "presets")
-                if os.path.exists(cwd):
-                    self.presets_dir = cwd
-                else:
-                    alt = os.path.join(current_dir, "..", "..", "presets")
-                    if os.path.exists(alt):
-                        self.presets_dir = os.path.abspath(alt)
+            self.presets_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'builtin_presets')
         else:
             self.presets_dir = presets_dir
 
@@ -410,6 +401,8 @@ class PresetManager:
 
     def load_presets(self) -> None:
         if not os.path.exists(self.presets_dir):
+            if not self._development_generator:
+                raise ValueError("Встроенные пресеты отсутствуют")
             self.create_default_presets()
             return
 
@@ -430,6 +423,8 @@ class PresetManager:
             )
             if not items
         }
+        if missing and not self._development_generator:
+            raise ValueError("Встроенные слои отсутствуют: " + ", ".join(sorted(missing)))
         if missing:
             # Только пустые слои — не перезаписываем YAML остальных
             self.create_default_presets(layers=missing)
@@ -507,6 +502,8 @@ class PresetManager:
 
     def create_default_presets(self, layers: set[str] | None = None) -> None:
         """Пишет дефолтные YAML только для указанных слоёв (по умолчанию — все)."""
+        if not self._development_generator:
+            raise TypeError('Генерация YAML доступна только для явно выбранного dev каталога')
         targets = set(layers) if layers is not None else set(self.LAYER_DIRS)
         unknown = targets - set(self.LAYER_DIRS)
         if unknown:
@@ -648,7 +645,8 @@ class PresetManager:
         data_id: str | None,
     ) -> tuple[str, str]:
         """audio=none → subtitles/data none; иначе default из YAML (или явный id)."""
-        if audio_id == "none":
+        audio = self.audios.get(audio_id)
+        if audio is not None and (audio.codec is None or audio.audio_map is None):
             if "none" not in self.subtitles:
                 raise ValueError(
                     "audio_id=none требует пресет subtitles_id=none, "
@@ -736,10 +734,112 @@ class PresetManager:
         self.load_presets()
 
 
-preset_manager = PresetManager()
 
-# Удобные алиасы после загрузки (для Job defaults)
-DEFAULT_VIDEO_ID = preset_manager.default_video_id
-DEFAULT_AUDIO_ID = preset_manager.default_audio_id
-DEFAULT_SUBTITLES_ID = preset_manager.default_subtitles_id
-DEFAULT_DATA_ID = preset_manager.default_data_id
+class CatalogSnapshot(PresetManager):
+    """Один неизменяемый набор моделей и происхождения на всю операцию."""
+    def __init__(self, definitions, defaults, details, revision, selections):
+        from types import MappingProxyType
+        self.catalog_revision = revision
+        self.selections = MappingProxyType(dict(selections))
+        self._details = details
+        classes = {'video': VideoPreset, 'audio': AudioPreset,
+                   'subtitles': SubtitlesPreset, 'data': DataPreset}
+        for layer, attribute in (('video', 'videos'), ('audio', 'audios'),
+                                 ('subtitles', 'subtitles'), ('data', 'data')):
+            items = {preset_id: classes[layer].from_dict(dict(definition, id=preset_id,
+                      default=preset_id == defaults[layer]))
+                     for preset_id, definition in definitions[layer].items()}
+            object.__setattr__(self, attribute, MappingProxyType(items))
+            object.__setattr__(self, f'default_{layer}_id', defaults[layer])
+        self._frozen = True
+
+    def __setattr__(self, name, value):
+        if getattr(self, '_frozen', False):
+            raise AttributeError('CatalogSnapshot неизменяем')
+        object.__setattr__(self, name, value)
+
+    def provenance(self, layer, preset_id):
+        import copy
+        return copy.deepcopy(self._details[(layer, preset_id)])
+
+    def selection_snapshot(self, video_id=None, audio_id=None, audio_downmix='none'):
+        vid = video_id or self.default_video_id
+        aid = audio_id or self.default_audio_id
+        sid, did = self._effective_mux_ids(aid, None, None)
+        layers = {}
+        for layer, preset_id in (('video', vid), ('audio', aid), ('subtitles', sid), ('data', did)):
+            detail = self.provenance(layer, preset_id)
+            layers[layer] = {key: detail[key] for key in ('id', 'name', 'source', 'fingerprint')}
+        return {'catalog_revision': self.catalog_revision, 'layers': layers,
+                'label': display_label(self.get_video(vid), self.get_audio(aid), audio_downmix)}
+
+    def reload_presets(self):
+        raise TypeError('Снимок нельзя перезагружать')
+
+    def load_presets(self):
+        raise TypeError('Снимок нельзя перезагружать')
+
+    def create_default_presets(self, *args, **kwargs):
+        raise TypeError('Встроенные пресеты доступны только для чтения')
+
+    def _save_yaml(self, *args, **kwargs):
+        raise TypeError('Встроенные пресеты доступны только для чтения')
+
+
+class CatalogPresetManager:
+    """Стабильный фасад: ссылки импортирующих модулей переживают все мутации."""
+    def __init__(self, *, builtin_dir=None, user_path=None):
+        import threading
+        self._builtin_dir = builtin_dir
+        self._user_path = user_path
+        self._services = {}
+        self._services_lock = threading.RLock()
+
+    @property
+    def service(self):
+        from app.preset_catalog import PresetCatalog
+        from app.preset_store import configured_path
+        path = self._user_path if self._user_path is not None else configured_path()
+        key = os.path.abspath(path)
+        with self._services_lock:
+            if key not in self._services:
+                self._services[key] = PresetCatalog(builtin_dir=self._builtin_dir, user_path=key)
+            return self._services[key]
+
+    def snapshot(self):
+        return self.service.snapshot()
+
+    @property
+    def ready(self):
+        from app.preset_schema import CatalogError
+        try:
+            return self.service.ready
+        except CatalogError:
+            return False
+
+    @property
+    def error(self):
+        from app.preset_schema import CatalogError
+        try:
+            return self.service.error.as_dict() if self.service.error else None
+        except CatalogError as exc:
+            return exc.as_dict()
+
+    @property
+    def catalog_revision(self):
+        return self.snapshot().catalog_revision
+
+    def reload_presets(self):
+        return self.service.reload()
+
+    def __getattr__(self, name):
+        return getattr(self.snapshot(), name)
+
+
+preset_manager = CatalogPresetManager()
+
+# Совместимость импортов: runtime-код должен брать defaults из snapshot().
+DEFAULT_VIDEO_ID = 'hevc_auto_level_rip'
+DEFAULT_AUDIO_ID = 'copy'
+DEFAULT_SUBTITLES_ID = 'copy'
+DEFAULT_DATA_ID = 'copy'

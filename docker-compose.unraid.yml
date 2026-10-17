@@ -7,10 +7,8 @@ video-encoder:
     - "3000:5000"
   volumes:
     - /mnt/user/appdata/al-web-video-encoder/uploads:/app/uploads
-    # Хранилище исходников для внутреннего режима (раскомментируйте):
-    # - /mnt/user/anilibria:/anilibria:ro
-    # Папка для готовых копий (запись); также задайте INTERNAL_OUTPUT_ROOTS=/exports:
-    # - /mnt/user/anilibria-encoded:/exports
+    # Общее хранилище исходников и готовых копий (чтение и запись):
+    - /mnt/user/anilibria:/anilibria:rw
     - /mnt/user/appdata/al-web-video-encoder/outputs:/app/outputs
     - /mnt/user/appdata/al-web-video-encoder/logs:/app/logs
     - /mnt/user/appdata/al-web-video-encoder/settings:/app/settings
@@ -28,7 +26,7 @@ video-encoder:
     CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000,http://*.mageek.home,https://*.mageek.su,http://192.168.1.254:3000
     SOCKETIO_ASYNC_MODE: threading
     INTERNAL_SOURCE_ROOTS: /anilibria
-    INTERNAL_OUTPUT_ROOTS: ${INTERNAL_OUTPUT_ROOTS-/anilibria}
+    INTERNAL_OUTPUT_ROOTS: /anilibria
   healthcheck:
     test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
     interval: 30s

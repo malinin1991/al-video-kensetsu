@@ -1373,6 +1373,7 @@ def save_output_to_server(job_id):
     try:
         result = save_job_output(
             job, payload.get('directory'), overwrite=payload.get('overwrite', False),
+            create_directories=payload.get('create_directories', False),
         )
     except OutputExportError as exc:
         return jsonify(exc.payload), exc.status_code

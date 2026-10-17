@@ -635,6 +635,7 @@ function renderServerSaveModal() {
     if (!state) return;
     const awaitingOverwrite = state.awaitingOverwrite;
     document.getElementById('serverSaveDirectory').disabled = state.busy || awaitingOverwrite;
+    document.getElementById('serverSaveCreateDirectories').disabled = state.busy || awaitingOverwrite;
     document.getElementById('serverSaveSubmitBtn').hidden = awaitingOverwrite;
     document.getElementById('serverSaveSubmitBtn').disabled = state.busy || !state.shown;
     document.getElementById('serverSaveOverwriteBtn').hidden = !awaitingOverwrite;
@@ -702,10 +703,12 @@ function saveJobToServer(jobId) {
     }
     _serverSaveState = {
         jobId, filename: job.output_filename || job.filename,
-        directory: '', busy: false, awaitingOverwrite: false, conflictPath: '', closing: false, shown: false,
+        directory: '', createDirectories: true,
+        busy: false, awaitingOverwrite: false, conflictPath: '', closing: false, shown: false,
     };
     document.getElementById('serverSaveFilename').textContent = _serverSaveState.filename;
     document.getElementById('serverSaveDirectory').value = '';
+    document.getElementById('serverSaveCreateDirectories').checked = true;
     setServerSaveError('');
     renderServerSaveModal();
     document.querySelectorAll('[data-bs-original-title]').forEach((el) => {
@@ -726,6 +729,7 @@ async function submitServerSave(overwrite = false) {
             return;
         }
         state.directory = directory;
+        state.createDirectories = document.getElementById('serverSaveCreateDirectories').checked;
     }
     state.busy = true;
     setServerSaveError('');
@@ -735,7 +739,9 @@ async function submitServerSave(overwrite = false) {
         const response = await fetch(`/api/jobs/${encodeURIComponent(state.jobId)}/save`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ directory: state.directory, overwrite }),
+            body: JSON.stringify({
+                directory: state.directory, overwrite, create_directories: state.createDirectories,
+            }),
         });
         let result = {};
         try {

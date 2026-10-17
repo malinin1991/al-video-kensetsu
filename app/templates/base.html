@@ -100,7 +100,11 @@
                     <p class="mb-3">Имя файла: <span id="serverSaveFilename" class="text-break"></span></p>
                     <label for="serverSaveDirectory" class="form-label">Папка на сервере</label>
                     <input type="text" class="form-control" id="serverSaveDirectory" placeholder="/media/готовые" aria-describedby="serverSaveDirectoryHelp serverSaveError" autocomplete="off" required>
-                    <div id="serverSaveDirectoryHelp" class="form-text">Укажите абсолютный путь к существующей папке на сервере.</div>
+                    <div id="serverSaveDirectoryHelp" class="form-text">Укажите абсолютный путь к папке на сервере. Недостающие папки можно создать автоматически.</div>
+                    <div class="form-check mt-3">
+                        <input type="checkbox" class="form-check-input" id="serverSaveCreateDirectories" checked>
+                        <label class="form-check-label" for="serverSaveCreateDirectories">Создать недостающие папки</label>
+                    </div>
                     <div id="serverSaveConflict" class="alert alert-warning mt-3 mb-0" role="alert" hidden>
                         <p class="mb-1">Файл уже существует. Перезаписать его?</p>
                         <div id="serverSaveConflictPath" class="text-break"></div>

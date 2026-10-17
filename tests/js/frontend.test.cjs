@@ -77,6 +77,7 @@ function serverSaveFrontend({ deferShown = false } = {}) {
     const env = frontend(['common']);
     const { context, elements } = env;
     ['serverSaveModal', 'serverSaveForm', 'serverSaveDirectory', 'serverSaveFilename',
+        'serverSaveCreateDirectories',
         'serverSaveError', 'serverSaveStatus', 'serverSaveSubmitBtn', 'serverSaveOverwriteBtn',
         'serverSaveCancelBtn', 'serverSaveCloseBtn', 'serverSaveConflict', 'serverSaveConflictPath']
         .forEach((id) => elements[id] = element());
@@ -264,12 +265,39 @@ test('server save submits a clean filename to the chosen directory without overw
     context.saveJobToServer('ready');
     assert.equal(modal.shown, true);
     assert.equal(elements.serverSaveFilename.textContent, 'Фильм_[HEVC].mkv');
+    assert.equal(elements.serverSaveCreateDirectories.checked, true);
     elements.serverSaveDirectory.value = ' /media ';
     elements.serverSaveForm.dispatchEvent({ type: 'submit' });
     await new Promise(setImmediate);
-    assert.deepEqual(requests, [{ url: '/api/jobs/ready/save', body: { directory: '/media', overwrite: false } }]);
+    assert.deepEqual(requests, [{ url: '/api/jobs/ready/save', body: {
+        directory: '/media', overwrite: false, create_directories: true,
+    } }]);
     assert.equal(modal.shown, false);
     assert.deepEqual(alerts, [{ type: 'success', message: 'Файл сохранён: /media/Фильм_[HEVC].mkv' }]);
+});
+
+test('unchecked directory creation sends false and leaves a missing-directory error visible', async () => {
+    const { context, elements, modal } = serverSaveFrontend();
+    const requests = [];
+    context.fetch = async (_url, options) => {
+        requests.push(JSON.parse(options.body));
+        return { ok: false, status: 404, json: async () => ({ error: 'Каталог не найден' }) };
+    };
+    context.saveJobToServer('ready');
+    elements.serverSaveDirectory.value = '/media/missing/encoded';
+    elements.serverSaveCreateDirectories.checked = false;
+    await context.submitServerSave();
+    assert.deepEqual(requests, [{
+        directory: '/media/missing/encoded', overwrite: false, create_directories: false,
+    }]);
+    assert.equal(elements.serverSaveError.textContent, 'Каталог не найден');
+    assert.equal(elements.serverSaveError.hidden, false);
+    assert.equal(elements.serverSaveCreateDirectories.checked, false);
+    assert.equal(elements.serverSaveCreateDirectories.disabled, false);
+    assert.equal(modal.shown, true);
+    modal.hide();
+    context.saveJobToServer('ready');
+    assert.equal(elements.serverSaveCreateDirectories.checked, true, 'each opening defaults to creating directories');
 });
 
 test('server save waits for the modal opening transition before allowing a request', async () => {
@@ -311,6 +339,7 @@ test('server save cancellation after a conflict never sends an overwrite request
     assert.equal(elements.serverSaveConflict.hidden, false);
     assert.equal(elements.serverSaveOverwriteBtn.hidden, false);
     assert.equal(elements.serverSaveDirectory.disabled, true);
+    assert.equal(elements.serverSaveCreateDirectories.disabled, true);
     assert.equal(focused, elements.serverSaveCancelBtn, 'conflict moves focus to the safe cancellation action');
     modal.hide();
     elements.serverSaveOverwriteBtn.dispatchEvent({ type: 'click' });
@@ -319,32 +348,37 @@ test('server save cancellation after a conflict never sends an overwrite request
     assert.equal(modal.shown, false);
 });
 
-test('explicit overwrite confirms the same job and path even if inputs or selection change', async () => {
-    const { context, elements } = serverSaveFrontend();
-    const requests = [];
-    context.window.jobsCache.other = { id: 'other', filename: 'other.mkv', status: 'done' };
-    context.fetch = async (url, options) => {
-        requests.push({ url, body: JSON.parse(options.body) });
-        return requests.length === 1
-            ? { ok: false, status: 409, json: async () => ({ code: 'file_exists', path: '/media/Фильм_[HEVC].mkv' }) }
-            : { ok: true, json: async () => ({ saved: true, overwritten: true }) };
-    };
-    context.saveJobToServer('ready');
-    elements.serverSaveDirectory.value = '/media';
-    await context.submitServerSave(true);
-    assert.equal(requests.length, 0, 'overwrite cannot be sent before a conflict');
-    await context.submitServerSave(false);
-    await context.submitServerSave(false);
-    assert.equal(requests.length, 1, 'ordinary submit cannot confirm overwrite');
-    context.saveJobToServer('other');
-    elements.serverSaveDirectory.value = '/changed';
-    elements.serverSaveOverwriteBtn.dispatchEvent({ type: 'click' });
-    await new Promise(setImmediate);
-    assert.deepEqual(requests, [
-        { url: '/api/jobs/ready/save', body: { directory: '/media', overwrite: false } },
-        { url: '/api/jobs/ready/save', body: { directory: '/media', overwrite: true } },
-    ]);
-});
+for (const createDirectories of [true, false]) {
+    test(`explicit overwrite keeps job, path and directory creation flag (${createDirectories}) fixed`, async () => {
+        const { context, elements } = serverSaveFrontend();
+        const requests = [];
+        context.window.jobsCache.other = { id: 'other', filename: 'other.mkv', status: 'done' };
+        context.fetch = async (url, options) => {
+            requests.push({ url, body: JSON.parse(options.body) });
+            return requests.length === 1
+                ? { ok: false, status: 409, json: async () => ({ code: 'file_exists', path: '/media/Фильм_[HEVC].mkv' }) }
+                : { ok: true, json: async () => ({ saved: true, overwritten: true }) };
+        };
+        context.saveJobToServer('ready');
+        elements.serverSaveDirectory.value = '/media';
+        elements.serverSaveCreateDirectories.checked = createDirectories;
+        await context.submitServerSave(true);
+        assert.equal(requests.length, 0, 'overwrite cannot be sent before a conflict');
+        await context.submitServerSave(false);
+        await context.submitServerSave(false);
+        assert.equal(requests.length, 1, 'ordinary submit cannot confirm overwrite');
+        assert.equal(elements.serverSaveCreateDirectories.disabled, true);
+        context.saveJobToServer('other');
+        elements.serverSaveDirectory.value = '/changed';
+        elements.serverSaveCreateDirectories.checked = !createDirectories;
+        elements.serverSaveOverwriteBtn.dispatchEvent({ type: 'click' });
+        await new Promise(setImmediate);
+        assert.deepEqual(requests, [
+            { url: '/api/jobs/ready/save', body: { directory: '/media', overwrite: false, create_directories: createDirectories } },
+            { url: '/api/jobs/ready/save', body: { directory: '/media', overwrite: true, create_directories: createDirectories } },
+        ]);
+    });
+}
 
 test('server save blocks duplicate requests and closing while a request is running', async () => {
     const { context, elements, modal } = serverSaveFrontend();
@@ -358,6 +392,7 @@ test('server save blocks duplicate requests and closing while a request is runni
     elements.serverSaveDirectory.value = '/media';
     const pending = context.submitServerSave();
     assert.equal(elements.serverSaveDirectory.disabled, true);
+    assert.equal(elements.serverSaveCreateDirectories.disabled, true);
     assert.equal(elements.serverSaveCancelBtn.disabled, true);
     assert.equal(elements.serverSaveForm.getAttribute('aria-busy'), 'true');
     modal.hide();
@@ -389,6 +424,7 @@ test('server save reports errors safely, unlocks the directory and rejects missi
     assert.equal(elements.serverSaveError.innerHTML, '');
     assert.equal(elements.serverSaveError.hidden, false);
     assert.equal(elements.serverSaveDirectory.disabled, false);
+    assert.equal(elements.serverSaveCreateDirectories.disabled, false);
     context.window.jobsCache.ready.output_available = false;
     context.saveJobToServer('ready');
     context.saveJobToServer('unknown');
@@ -411,6 +447,8 @@ test('server save conflict path is text and the shared modal has an accessible d
     assert.equal(elements.serverSaveConflictPath.innerHTML, '');
     const template = fs.readFileSync(path.join(root, 'app/templates/base.html'), 'utf8');
     assert.match(template, /<label for="serverSaveDirectory"/);
+    assert.match(template, /<label[^>]*for="serverSaveCreateDirectories">Создать недостающие папки/);
+    assert.match(template, /id="serverSaveCreateDirectories" checked/);
     assert.match(template, /id="serverSaveConflict"[^>]*role="alert"/);
     assert.match(template, /data-bs-dismiss="modal" id="serverSaveCancelBtn">Отмена/);
     assert.match(template, /id="serverSaveOverwriteBtn" hidden>Перезаписать/);

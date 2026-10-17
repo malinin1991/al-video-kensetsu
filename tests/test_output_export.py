@@ -3,6 +3,8 @@
 import errno
 import os
 import stat
+from concurrent.futures import ThreadPoolExecutor
+import threading
 
 import pytest
 
@@ -344,3 +346,222 @@ def test_path_fallback_rejects_directory_replacement(export_env, monkeypatch):
     response = save(export_env)
     assert response.status_code == 403
     assert outside_file.read_bytes() == b'outside-file-must-not-be-deleted'
+
+
+@pytest.mark.parametrize('fallback', [False, True])
+def test_create_unicode_directory_tree_and_save(export_env, monkeypatch, fallback):
+    _client, job, root, _destination, result = export_env
+    if fallback:
+        monkeypatch.setattr(output_export, '_supports_directory_fd', lambda: False)
+    destination = root / 'Готовое видео' / 'Сериал 日本語' / 'Сезон 01'
+    response = save(export_env, directory=str(destination), create_directories=True)
+    assert response.status_code == 200
+    target = destination / job.get_download_filename()
+    assert response.get_json()['path'] == str(target)
+    assert response.get_json()['overwritten'] is False
+    assert target.read_bytes() == result.read_bytes()
+    assert_no_temporary(destination)
+
+
+@pytest.mark.parametrize('value', ['true', 'false', 0, 1, None, [], {}])
+def test_create_directories_must_be_boolean_without_creating_anything(export_env, value):
+    destination = export_env[2] / 'do-not-create' / 'child'
+    response = save(export_env, directory=str(destination), create_directories=value)
+    assert response.status_code == 400
+    assert not destination.parent.exists()
+
+
+def test_invalid_overwrite_does_not_create_directories(export_env):
+    destination = export_env[2] / 'do-not-create' / 'child'
+    response = save(
+        export_env, directory=str(destination), overwrite='false', create_directories=True,
+    )
+    assert response.status_code == 400
+    assert not destination.parent.exists()
+
+
+def test_create_directories_does_not_create_missing_allowed_root(export_env, monkeypatch):
+    root = export_env[2].parent / 'missing-root'
+    monkeypatch.setenv('INTERNAL_OUTPUT_ROOTS', str(root))
+    response = save(export_env, directory=str(root / 'child'), create_directories=True)
+    assert response.status_code == 404
+    assert not root.exists()
+
+
+def test_create_directories_can_use_an_existing_parent_allowed_root(export_env, monkeypatch):
+    root = export_env[2]
+    destination = root / 'nested-root' / 'child'
+    monkeypatch.setenv('INTERNAL_OUTPUT_ROOTS', f'{root / "nested-root"},{root}')
+    response = save(export_env, directory=str(destination), create_directories=True)
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize('kind', ['sibling', 'traversal', 'symlink'])
+def test_create_directories_rejects_escape_without_creating_outside(export_env, kind):
+    root = export_env[2]
+    outside = root.parent / 'outside'
+    outside.mkdir()
+    if kind == 'sibling':
+        destination = outside / 'do-not-create'
+    elif kind == 'traversal':
+        destination = root / '..' / 'outside' / 'do-not-create'
+    else:
+        link = root / 'escape'
+        create_symlink_or_skip(outside, link)
+        destination = link / 'do-not-create'
+    response = save(export_env, directory=str(destination), create_directories=True)
+    assert response.status_code == 403
+    assert not list(outside.iterdir())
+
+
+@pytest.mark.parametrize('fallback', [False, True])
+def test_create_directories_rejects_existing_file_component(export_env, monkeypatch, fallback):
+    if fallback:
+        monkeypatch.setattr(output_export, '_supports_directory_fd', lambda: False)
+    root = export_env[2]
+    existing = root / 'existing-file'
+    existing.write_bytes(b'keep-this-file')
+    response = save(
+        export_env, directory=str(existing / 'child' / 'grandchild'), create_directories=True,
+    )
+    assert response.status_code == 400
+    assert existing.read_bytes() == b'keep-this-file'
+    assert not (root / 'child').exists()
+
+
+def test_create_directories_resolves_existing_internal_symlink(export_env):
+    _client, job, root, destination, _result = export_env
+    link = root / 'alias'
+    create_symlink_or_skip(destination, link)
+    response = save(
+        export_env, directory=str(link / 'Сезон 1' / 'Часть 2'), create_directories=True,
+    )
+    assert response.status_code == 200
+    assert response.get_json()['path'] == str(destination / 'Сезон 1' / 'Часть 2' / job.get_download_filename())
+
+
+@pytest.mark.parametrize('source_state', ['missing', 'unset', 'directory', 'not-done', 'unreadable'])
+def test_invalid_source_does_not_create_directories(export_env, monkeypatch, source_state):
+    _client, job, root, _destination, result = export_env
+    destination = root / 'do-not-create' / 'child'
+    expected_status = 404
+    if source_state == 'missing':
+        result.unlink()
+    elif source_state == 'unset':
+        job.output_path = None
+    elif source_state == 'directory':
+        job.output_path = str(root)
+    elif source_state == 'not-done':
+        job.status = JobStatus.IN_PROGRESS
+        expected_status = 400
+    else:
+        expected_status = 403
+        open_file = os.open
+
+        def deny_source(path, *args, **kwargs):
+            if path == str(result):
+                raise PermissionError('source is unreadable')
+            return open_file(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, 'open', deny_source)
+    response = save(export_env, directory=str(destination), create_directories=True)
+    assert response.status_code == expected_status
+    assert not destination.parent.exists()
+
+
+def test_directory_creation_permission_error_preserves_source(export_env, monkeypatch):
+    destination = export_env[2] / 'blocked' / 'child'
+
+    def deny_directory(*_args, **_kwargs):
+        raise PermissionError('destination is unwritable')
+
+    monkeypatch.setattr(os, 'mkdir', deny_directory)
+    response = save(export_env, directory=str(destination), create_directories=True)
+    assert response.status_code == 403
+    assert not destination.parent.exists()
+    assert export_env[4].read_bytes() == b'finished-encoded-video'
+
+
+def test_created_directories_respect_umask_and_existing_permissions(export_env):
+    if os.name != 'posix':
+        pytest.skip('POSIX права недоступны')
+    root = export_env[2]
+    parent = root / 'existing'
+    parent.mkdir(mode=0o750)
+    parent.chmod(0o750)
+    destination = parent / 'new' / 'child'
+    previous_umask = os.umask(0o027)
+    try:
+        response = save(export_env, directory=str(destination), create_directories=True)
+    finally:
+        os.umask(previous_umask)
+    assert response.status_code == 200
+    assert stat.S_IMODE(parent.stat().st_mode) == 0o750
+    assert stat.S_IMODE(destination.parent.stat().st_mode) == 0o750
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o750
+
+
+def test_created_empty_directories_can_remain_after_failed_copy(export_env, monkeypatch):
+    destination = export_env[2] / 'new' / 'child'
+
+    def fail_copy(_source, temporary):
+        temporary.write(b'partial-copy')
+        raise OSError(errno.ENOSPC, 'disk full')
+
+    monkeypatch.setattr(output_export, '_copy_stream', fail_copy)
+    response = save(export_env, directory=str(destination), create_directories=True)
+    assert response.status_code == 500
+    assert destination.is_dir()
+    assert not list(destination.iterdir())
+    assert export_env[4].read_bytes() == b'finished-encoded-video'
+
+
+def test_concurrent_creation_of_shared_parents(export_env, monkeypatch):
+    _client, job, root, _destination, result = export_env
+    if not output_export._supports_directory_fd():
+        pytest.skip('Проверка dir_fd доступна только на POSIX')
+    open_child = output_export._open_output_child
+    barrier = threading.Barrier(2)
+
+    def synchronize_missing_parent(descriptor, component):
+        try:
+            return open_child(descriptor, component)
+        except FileNotFoundError:
+            if component == 'shared':
+                barrier.wait(timeout=5)
+            raise
+
+    monkeypatch.setattr(output_export, '_open_output_child', synchronize_missing_parent)
+    directories = [root / 'shared' / 'first', root / 'shared' / 'second']
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(output_export.save_job_output, job, str(directory), create_directories=True) for directory in directories]
+        results = [future.result(timeout=10) for future in futures]
+    assert all(response['saved'] is True for response in results)
+    for directory in directories:
+        assert (directory / job.get_download_filename()).read_bytes() == result.read_bytes()
+        assert_no_temporary(directory)
+
+
+def test_symlink_appearing_during_directory_creation_cannot_escape(export_env, monkeypatch):
+    _client, _job, root, _destination, result = export_env
+    if not output_export._supports_directory_fd():
+        pytest.skip('Проверка dir_fd доступна только на POSIX')
+    outside = result.parent / 'outside'
+    outside.mkdir()
+    open_child = output_export._open_output_child
+    replaced = False
+
+    def replace_component(descriptor, component):
+        nonlocal replaced
+        try:
+            return open_child(descriptor, component)
+        except FileNotFoundError:
+            if component == 'new' and not replaced:
+                replaced = True
+                create_symlink_or_skip(outside, root / 'new')
+            raise
+
+    monkeypatch.setattr(output_export, '_open_output_child', replace_component)
+    response = save(export_env, directory=str(root / 'new' / 'do-not-create'), create_directories=True)
+    assert response.status_code == 403
+    assert not list(outside.iterdir())

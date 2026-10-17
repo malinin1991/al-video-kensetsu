@@ -11,13 +11,13 @@
 
 **Способ A: Git (рекомендуется)**
 ```bash
-git clone https://github.com/malinin1991/al-web-video-encoder.git
-cd al-web-video-encoder
+git clone https://github.com/malinin1991/al-video-kensetsu.git
+cd al-video-kensetsu
 ```
 
 **Способ B: Архив**
 1. Скачайте архив проекта
-2. Распакуйте в папку `al_web_video_encoder`
+2. Распакуйте в папку `al-video-kensetsu`
 3. Откройте PowerShell в этой папке
 
 ### 2. Запуск приложения
@@ -85,7 +85,7 @@ ports:
 ## Структура проекта
 
 ```
-al_web_video_encoder/
+al-video-kensetsu/
 ├── app/                    # Код приложения
 ├── presets/               # Пресеты кодирования
 ├── docker/                # Docker конфигурация

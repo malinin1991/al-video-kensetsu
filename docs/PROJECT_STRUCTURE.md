@@ -1,4 +1,4 @@
-# Структура проекта al-web-video-encoder
+# Структура проекта al-video-kensetsu
 
 Приложение принимает MP4 и MKV, создаёт задания кодирования и выдаёт готовые
 MKV через веб-интерфейс и HTTP API. Backend построен на Flask и Flask-SocketIO,

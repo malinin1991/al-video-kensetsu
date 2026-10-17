@@ -2,6 +2,8 @@
 
 ## Контекст и навигация
 
+- Проект — `al-video-kensetsu`, репозиторий:
+  [malinin1991/al-video-kensetsu](https://github.com/malinin1991/al-video-kensetsu).
 - Это Flask / Flask-SocketIO приложение для кодирования MP4/MKV через FFmpeg
   и последующей обработки MKV через MKVToolNix. Frontend — Jinja и глобальный JS без npm.
 - Полная карта файлов: [docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md).

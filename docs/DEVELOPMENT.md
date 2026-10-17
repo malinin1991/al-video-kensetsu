@@ -1,4 +1,4 @@
-# Разработка al-web-video-encoder
+# Разработка al-video-kensetsu
 
 Расположение модулей и поток выполнения описаны в [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md).
 HTTP контракт находится в [API.md](API.md). Backend запускается одним Python

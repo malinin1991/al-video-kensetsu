@@ -1,6 +1,10 @@
-# Система пакетного кодирования видео
+# al-video-kensetsu — система пакетного кодирования видео
 
 Веб-система для пакетного кодирования видео с использованием Python 3.15, Flask, Bootstrap, Docker и FFmpeg.
+
+Репозиторий: [malinin1991/al-video-kensetsu](https://github.com/malinin1991/al-video-kensetsu).
+Прежнее имя `al-web-video-encoder` сохраняется в именах Docker-образов и каталогах данных
+для совместимости с текущими установками.
 
 ## Возможности
 
@@ -29,7 +33,7 @@
 Краткие заметки и правила для агента: **[AGENTS.md](AGENTS.md)**.
 
 ```
-al-web-video-encoder/
+al-video-kensetsu/
 ├── run.py                   # Запуск сервера Socket.IO на порту 5000
 ├── app/
 │   ├── main.py              # Flask, Socket.IO, callbacks воркера
@@ -64,8 +68,8 @@ al-web-video-encoder/
 ### 1. Клонирование и подготовка
 
 ```bash
-git clone https://github.com/malinin1991/al-web-video-encoder.git
-cd al-web-video-encoder
+git clone https://github.com/malinin1991/al-video-kensetsu.git
+cd al-video-kensetsu
 ```
 
 ### 2. Запуск через Docker Compose
@@ -90,8 +94,8 @@ docker compose up --build
 
 ```cmd
 # Клонирование (если есть Git)
-git clone https://github.com/malinin1991/al-web-video-encoder.git
-cd al-web-video-encoder
+git clone https://github.com/malinin1991/al-video-kensetsu.git
+cd al-video-kensetsu
 
 # Запуск
 docker compose -f docker-compose.windows.yml up --build
@@ -101,8 +105,8 @@ docker compose -f docker-compose.windows.yml up --build
 
 ```powershell
 # Клонирование
-git clone https://github.com/malinin1991/al-web-video-encoder.git
-cd al-web-video-encoder
+git clone https://github.com/malinin1991/al-video-kensetsu.git
+cd al-video-kensetsu
 
 # Запуск
 docker compose -f docker-compose.windows.yml up --build

@@ -1,4 +1,4 @@
-# API спецификация — al_web_video_encoder
+# API спецификация — al-video-kensetsu
 
 Самодостаточный документ для интеграции (в т.ч. через LLM). Базовый URL:
 `http://<host>:3000` для основного Docker Compose, `http://<host>:5000` для локального сервера.

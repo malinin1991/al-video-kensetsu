@@ -20,6 +20,17 @@ if __name__ == '__main__':
         ensure_ffmpeg()
 
     from app.main import app, socketio
+    from app.main import ffmpeg_worker
+    import atexit
+    import signal
+
+    def shutdown(signum, frame):
+        ffmpeg_worker.stop_worker()
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, shutdown)
+    atexit.register(ffmpeg_worker.stop_worker)
 
     print("🎬 Запуск системы кодирования видео")
     print("=" * 50)

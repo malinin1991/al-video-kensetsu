@@ -894,7 +894,7 @@ class TestBuildMkvmergeOptions:
 class TestIdentifyEncodedFile:
     def test_failure_raises(self):
         with patch(
-            'app.mkvmerge_remux.subprocess.run',
+            'app.mkvmerge_remux.run_media',
         ) as mock_run, patch(
             'app.mkvmerge_remux.get_mkvmerge_bin',
             return_value='mkvmerge',
@@ -911,7 +911,7 @@ class TestIdentifyEncodedFile:
             'tracks': [],
         })
         with patch(
-            'app.mkvmerge_remux.subprocess.run',
+            'app.mkvmerge_remux.run_media',
         ) as mock_run, patch(
             'app.mkvmerge_remux.get_mkvmerge_bin',
             return_value='mkvmerge',
@@ -1030,7 +1030,7 @@ class TestFontMimeFixes:
             stderr = ''
 
         with patch(
-            'app.mkvmerge_remux.subprocess.run', return_value=Result()
+            'app.mkvmerge_remux.run_media', return_value=Result()
         ) as run:
             fixes = fix_font_attachment_mime_types(
                 str(target), identify=identify
@@ -1059,7 +1059,7 @@ class TestFontMimeFixes:
                 },
             ],
         }
-        with patch('app.mkvmerge_remux.subprocess.run') as run:
+        with patch('app.mkvmerge_remux.run_media') as run:
             fixes = fix_font_attachment_mime_types(
                 str(target), identify=identify
             )

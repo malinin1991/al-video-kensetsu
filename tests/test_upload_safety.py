@@ -371,16 +371,20 @@ def test_delete_waits_for_finalization_and_removes_its_late_output(client, tmp_p
     assert not Path(job.output_path).exists()
 
 
-def test_stop_does_not_relabel_successful_finalization_as_cancelled(client, tmp_path):
+@pytest.mark.parametrize('terminal', [JobStatus.DONE, JobStatus.ERROR])
+def test_stop_does_not_relabel_committed_result_as_cancelled(client, tmp_path, terminal):
+    (tmp_path / 'input.mkv').write_bytes(b'input')
     job = Job(id='stop-finalize', filename='video.mkv', original_path=str(tmp_path / 'input.mkv'))
     routes.add_job(job)
     job.status = JobStatus.IN_PROGRESS
 
     def finish_during_stop(_job_id):
-        job.status = JobStatus.DONE
+        job.status = terminal
+        from app.job_store import get_job_store
+        get_job_store().save_job(job)
         return {'process_dead': True, 'thread_stopped': True}
 
     routes.get_ffmpeg_worker_instance().stop_job.side_effect = finish_during_stop
     response = client.post(f'/api/jobs/{job.id}/stop')
     assert response.status_code == 200
-    assert job.status == JobStatus.DONE
+    assert job.status == terminal

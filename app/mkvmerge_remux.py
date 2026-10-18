@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+from app.execution import run_media
 from typing import Any
 
 from app.file_utils import cleanup_file
@@ -242,7 +243,7 @@ def fix_font_attachment_mime_types(
             for fix in fixes
         ),
     )
-    result = subprocess.run(
+    result = run_media(
         cmd,
         capture_output=True,
         text=True,
@@ -266,7 +267,7 @@ def fix_font_attachment_mime_types(
 
 def identify_encoded_file(filepath: str, timeout: int = 60) -> dict[str, Any]:
     """Читает дорожки закодированного файла через mkvmerge -J."""
-    result = subprocess.run(
+    result = run_media(
         [get_mkvmerge_bin(), '-J', filepath],
         capture_output=True,
         text=True,

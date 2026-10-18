@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import json
 import re
 import subprocess
+from app.execution import run_media
 from typing import Callable
 
 
@@ -76,7 +77,7 @@ def probe_audio_streams(
     ffprobe_bin: str,
     *,
     timeout: float = 30,
-    run: Callable = subprocess.run,
+    run: Callable = run_media,
 ) -> list[AudioStreamInfo]:
     """ffprobe всех аудиопотоков: channels / channel_layout / index.
 

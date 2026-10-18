@@ -5,10 +5,13 @@ import os
 import re
 import copy
 import json
+import signal
+from app.execution import popen_media, run_media, media_process_finished, MediaProcessStillRunning
+from app.job_store import StatePersistenceError
 from typing import Callable
 
 from app.models.job import Job, JobStatus, utc_now
-from app.file_utils import cleanup_file, get_outputs_dir
+from app.file_utils import cleanup_file, get_outputs_dir, sync_directory
 from app.internal_source import (
     cleanup_job_original,
     is_internal_source_path,
@@ -45,7 +48,7 @@ VALID_X265_TUNES = frozenset({
 
 
 class FFmpegWorker:
-    def __init__(self, progress_callback: Callable | None = None, log_callback: Callable | None = None, status_callback: Callable | None = None):
+    def __init__(self, progress_callback: Callable | None = None, log_callback: Callable | None = None, status_callback: Callable | None = None, *, store=None, jobs=None, autostart=True):
         self.progress_callback = progress_callback
         self.log_callback = log_callback
         self.status_callback = status_callback
@@ -60,11 +63,67 @@ class FFmpegWorker:
         # Из settings (файл) или env MAX_CONCURRENT_ENCODES; дефолт 1
         self.max_concurrent = get_max_concurrent_encodes()
         self._job_threads: dict[str, threading.Thread] = {}
+        self.store = store
+        self.jobs = jobs if jobs is not None else {}
+        self.storage_error = None
+        self._commit_failed = set()
+        if self.store is not None:
+            self.store.failure_callback = self._pause_storage
         
         logger.main_logger.info(
             f'FFmpegWorker: параллельных слотов кодирования = {self.max_concurrent}'
         )
-        self.start_worker()
+        if autostart:
+            self.start_worker()
+
+    def _publish_status(self, job):
+        try:
+            if self.status_callback:
+                self.status_callback(job.id, job.status, job.error_message)
+        except Exception as exc:
+            self.storage_error = str(exc)
+            if not hasattr(self, '_commit_failed'):
+                self._commit_failed = set()
+            self._commit_failed.add(job.id)
+            raise StatePersistenceError(str(exc)) from exc
+
+    def _pause_storage(self, exc):
+        self.storage_error = str(exc)
+
+    def _unconfirmed_process(self, job_id):
+        self.storage_error = f'Не подтверждено завершение медиапроцесса задания {job_id}'
+        if not hasattr(self, '_commit_failed'):
+            self._commit_failed = set()
+        self._commit_failed.add(job_id)
+
+    def _require_media_exit(self, process, job_id):
+        if not media_process_finished(process, timeout=5):
+            self._unconfirmed_process(job_id)
+            raise StatePersistenceError(self.storage_error)
+
+    def _stop_media_or_pause(self, process, job_id):
+        if not self._kill_process(process, job_id):
+            raise StatePersistenceError(self.storage_error)
+
+    def _check_storage(self):
+        if getattr(self, 'store', None) is None:
+            return
+        from app.internal_source import get_uploads_dir
+        try:
+            identities = []
+            for path in (get_uploads_dir(), get_outputs_dir()):
+                info = os.stat(path)
+                if not os.path.isdir(path) or not os.access(path, os.R_OK | os.W_OK | os.X_OK):
+                    raise OSError(f'Нет доступа к {path}')
+                if os.statvfs(path).f_bavail == 0:
+                    raise OSError(f'Хранилище заполнено: {path}')
+                identities.append((info.st_dev, info.st_ino))
+            if hasattr(self, '_storage_identity') and self._storage_identity != identities:
+                raise OSError('Каталог хранилища подменён или mount отключён')
+            self._storage_identity = identities
+        except OSError as exc:
+            self.storage_error = str(exc)
+            raise StatePersistenceError(str(exc)) from exc
 
     def set_max_concurrent(self, value: int) -> int:
         """
@@ -104,11 +163,34 @@ class FFmpegWorker:
             started = False
             with self._lock:
                 self._reap_finished_job_threads()
+                if getattr(self, 'store', None) is not None and not self.storage_error:
+                    try:
+                        queued_ids = self.store.queued_ids()
+                        if queued_ids:
+                            self._check_storage()
+                        for job_id in queued_ids:
+                            if job_id not in self.jobs:
+                                loaded = self.store.load_job(job_id)
+                                if loaded is not None:
+                                    self.jobs.setdefault(job_id, loaded)
+                        self.job_queue = [self.jobs[job_id] for job_id in queued_ids if job_id in self.jobs]
+                    except Exception as exc:
+                        self.storage_error = str(exc)
                 while (
                     self.job_queue
                     and len(self._job_threads) < self.max_concurrent
+                    and not self.stop_event.is_set()
+                    and not getattr(self, 'storage_error', None)
                 ):
                     job = self.job_queue.pop(0)
+                    if getattr(self, 'store', None) is not None:
+                        try:
+                            job.output_path = os.path.join(get_outputs_dir(), job.get_output_filename())
+                            if not self.store.claim_job(job):
+                                continue
+                        except Exception as exc:
+                            self.storage_error = str(exc)
+                            break
                     thread = threading.Thread(
                         target=self._process_job,
                         args=(job,),
@@ -116,7 +198,12 @@ class FFmpegWorker:
                         name=f'ffmpeg-job-{job.id[:8]}',
                     )
                     self._job_threads[job.id] = thread
-                    thread.start()
+                    try:
+                        thread.start()
+                    except Exception as exc:
+                        self._job_threads.pop(job.id, None)
+                        self.storage_error = f'Не удалось запустить поток задания: {exc}'
+                        break
                     started = True
             if not started:
                 time.sleep(0.25)
@@ -126,8 +213,10 @@ class FFmpegWorker:
         with self._lock:
             self._cancel_requested.discard(job.id)
             # Статус задаём до публикации: диспетчер может стартовать немедленно.
-            job.status = JobStatus.PLANNED
-            self.job_queue.append(job)
+            if job.status != JobStatus.PLANNED:
+                return
+            if not any(item.id == job.id for item in self.job_queue):
+                self.job_queue.append(job)
             queue_pos = len(self.job_queue)
         logger.main_logger.info(f"Задание {job.id} добавлено в очередь FFmpeg (позиция: {queue_pos})")
 
@@ -137,23 +226,29 @@ class FFmpegWorker:
 
     def _mark_job_cancelled(self, job: Job, emit: bool = True):
         """Помечает задание как отменённое (без повторной эмиссии при необходимости)."""
+        if self.stop_event.is_set():
+            return
         job.status = JobStatus.CANCELLED
         job.error_message = "Задание отменено пользователем"
         job.completed_at = utc_now()
-        if emit and self.status_callback:
-            self.status_callback(job.id, job.status, job.error_message)
+        if emit:
+            self._publish_status(job)
 
     def _kill_process(self, process: subprocess.Popen, job_id: str) -> bool:
         """Завершает процесс FFmpeg (terminate → wait → kill) и проверяет, что он мёртв."""
         if process is None:
             return True
         if process.poll() is not None:
-            logger.main_logger.info(f"FFmpeg для {job_id} уже завершён (код {process.returncode})")
-            return True
+            dead = media_process_finished(process, timeout=5)
+            if not dead:
+                self._unconfirmed_process(job_id)
+            return dead
 
         pid = process.pid
         logger.main_logger.info(f"Остановка FFmpeg PID={pid} для задания {job_id}")
         try:
+            if type(getattr(process, '_completion_fd', None)) is int:
+                process.send_signal(signal.SIGCONT)
             process.terminate()
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
@@ -164,7 +259,9 @@ class FFmpegWorker:
             except Exception as e:
                 logger.main_logger.error(f"Не удалось убить FFmpeg PID={pid}: {e}")
 
-        dead = process.poll() is not None
+        dead = process.poll() is not None and media_process_finished(process, timeout=5)
+        if not dead:
+            self._unconfirmed_process(job_id)
         if dead:
             logger.main_logger.info(f"FFmpeg PID={pid} для {job_id} остановлен (код {process.returncode})")
         else:
@@ -174,6 +271,9 @@ class FFmpegWorker:
     def _process_job(self, job: Job):
         """Обрабатывает одно задание"""
         try:
+            if self.stop_event.is_set():
+                return
+            self._check_storage()
             # Гонка: задание сняли с очереди / отменили между pop и стартом
             if self._is_cancel_requested(job.id) or job.status == JobStatus.CANCELLED:
                 logger.main_logger.info(f"Задание {job.id} отменено до старта — пропуск")
@@ -189,9 +289,8 @@ class FFmpegWorker:
             job.output_path = output_path
             
             job.status = JobStatus.IN_PROGRESS
-            job.started_at = utc_now()
-            if self.status_callback:
-                self.status_callback(job.id, job.status, job.error_message)
+            job.started_at = job.started_at or utc_now()
+            self._publish_status(job)
 
             if self._is_cancel_requested(job.id):
                 logger.main_logger.info(f"Задание {job.id} отменено сразу после старта статуса — пропуск FFmpeg")
@@ -206,6 +305,8 @@ class FFmpegWorker:
             job.total_frames = 0  # Будет установлено при парсинге NUMBER_OF_FRAMES
             
             # Проверка целостности файла перед кодированием
+            if getattr(self, 'store', None) is not None and (not job.file_hash or not os.path.isfile(job.original_path)):
+                raise ValueError('Исходник или сохранённый SHA256 отсутствует')
             if job.file_hash and not job.verify_hash():
                 raise ValueError('Проверка целостности файла не пройдена')
 
@@ -233,24 +334,38 @@ class FFmpegWorker:
                 self.running_jobs[job.id] = job
             self._run_ffmpeg(job, cmd, encode_path)
             
+        except MediaProcessStillRunning as exc:
+            # Синхронный ffprobe/identify/mkvpropedit тоже может пережить guardian.
+            # Сохраняем ownership до подтверждения выхода, в том числе для stop/delete.
+            with self._lock:
+                self.processes[job.id] = exc.process
+            self._unconfirmed_process(job.id)
+            logger.main_logger.exception('Медиапроцесс не завершён; новые выдачи приостановлены')
+        except StatePersistenceError:
+            logger.main_logger.exception('Не удалось сохранить состояние; новые выдачи приостановлены')
         except Exception as e:
+            if self.stop_event.is_set():
+                return
+            self._check_storage()
             if self._is_cancel_requested(job.id) or job.status == JobStatus.CANCELLED:
                 self._mark_job_cancelled(job)
             else:
                 job.status = JobStatus.ERROR
                 job.error_message = str(e)
                 job.completed_at = utc_now()
-                if self.status_callback:
-                    self.status_callback(job.id, job.status, job.error_message)
+                self._publish_status(job)
                 if self.log_callback:
                     self.log_callback(job.id, f"Ошибка: {str(e)}")
         finally:
             with self._lock:
                 self.running_jobs.pop(job.id, None)
-                self.processes.pop(job.id, None)
+                current_process = self.processes.get(job.id)
+                if current_process is None or media_process_finished(current_process):
+                    self.processes.pop(job.id, None)
                 self._cancel_requested.discard(job.id)
                 self._missing_total_frames_logged.discard(job.id)
-            if job.status in (JobStatus.CANCELLED, JobStatus.ERROR):
+            if (not self.stop_event.is_set() and job.id not in getattr(self, '_commit_failed', set())
+                    and job.status in (JobStatus.CANCELLED, JobStatus.ERROR)):
                 self._cleanup_unsuccessful_job(job)
     
     def _warn_multiple_audio_tracks(self, job: Job):
@@ -264,7 +379,7 @@ class FFmpegWorker:
             return
 
         try:
-            result = subprocess.run(
+            result = run_media(
                 [
                     get_ffprobe_bin(), '-v', 'error',
                     '-select_streams', 'a',
@@ -288,6 +403,8 @@ class FFmpegWorker:
                 logger.main_logger.warning(warning)
                 if self.log_callback:
                     self.log_callback(job.id, warning)
+        except MediaProcessStillRunning:
+            raise
         except Exception as e:
             logger.main_logger.debug(f"ffprobe: не удалось проверить аудиодорожки для {job.id}: {e}")
 
@@ -304,11 +421,14 @@ class FFmpegWorker:
         if not job.output_path:
             return
         cleanup_job_sidecars(job.output_path, job.id)
+        for number in range(1, job.attempt_no + 1):
+            cleanup_job_sidecars(self._attempt_output(job, number), job.id)
 
     def _active_jobs(self) -> list:
         """Задания в очереди и в работе (для проверки общих исходников)."""
         with self._lock:
-            return list(self.job_queue) + list(self.running_jobs.values())
+            return (list(self.job_queue) + list(self.running_jobs.values())
+                    + list(getattr(self, 'jobs', {}).values()))
 
     def _cleanup_temp_original(self, job: Job) -> None:
         """Удаляет upload/temp исходник; internal/read-only не трогает."""
@@ -345,10 +465,15 @@ class FFmpegWorker:
         self._cleanup_incomplete_output(job)
 
     def _encode_output_path(self, job: Job) -> str:
-        """Путь encode: *.partial.mkv если дальше будет remux, иначе финальное имя."""
-        if self._should_remux_metadata(job) and job.output_path:
-            return encode_partial_path(job.output_path)
+        """Каждая попытка пишет собственный partial; итог публикуется после успеха."""
+        if job.output_path:
+            return encode_partial_path(self._attempt_output(job, job.attempt_no))
         return job.output_path
+
+    @staticmethod
+    def _attempt_output(job, number):
+        stem, ext = os.path.splitext(job.output_path)
+        return f'{stem}.attempt-{number}{ext}'
 
     def _build_ffmpeg_command(self, job: Job, output_path: str | None = None) -> list:
         """Строит команду FFmpeg на основе параметров задания (без тегов/метаинфы)."""
@@ -602,9 +727,11 @@ class FFmpegWorker:
         self._fix_font_mimes_before_merge(job, encode_path)
         if self._should_remux_metadata(job):
             self._run_mkvmerge_remux(job, encode_path)
-            return
-        if encode_path and job.output_path and encode_path != job.output_path:
+        elif encode_path and job.output_path and encode_path != job.output_path:
             os.replace(encode_path, job.output_path)
+        with open(job.output_path, 'rb') as output:
+            os.fsync(output.fileno())
+        sync_directory(os.path.dirname(job.output_path))
 
     def _run_mkvmerge_remux(self, job: Job, encode_path: str) -> None:
         """Собирает JSON-опции и запускает mkvmerge @json во временный файл."""
@@ -615,8 +742,8 @@ class FFmpegWorker:
 
         logger.main_logger.info(f'Remux: identify {encode_path}')
         identify = identify_encoded_file(encode_path)
-        tmp_output = remux_temp_path(job.output_path)
-        json_path = option_file_path(job.output_path, job.id)
+        tmp_output = remux_temp_path(self._attempt_output(job, job.attempt_no))
+        json_path = option_file_path(self._attempt_output(job, job.attempt_no), job.id)
         options = build_mkvmerge_options(
             encode_path,
             tmp_output,
@@ -634,7 +761,7 @@ class FFmpegWorker:
         cmd = [get_mkvmerge_bin(), f'@{json_path}']
         logger.main_logger.info(f'Запуск mkvmerge для задания {job.id}: {cmd[0]} @{json_path}')
 
-        process = subprocess.Popen(
+        process = popen_media(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -647,14 +774,14 @@ class FFmpegWorker:
             self.processes[job.id] = process
 
         if self._is_cancel_requested(job.id) or self.stop_event.is_set():
-            self._kill_process(process, job.id)
+            self._stop_media_or_pause(process, job.id)
             self._mark_job_cancelled(job)
             raise RuntimeError('Задание отменено на шаге remux')
 
         try:
             for line in iter(process.stdout.readline, ''):
                 if self.stop_event.is_set() or self._is_cancel_requested(job.id) or job.status == JobStatus.CANCELLED:
-                    self._kill_process(process, job.id)
+                    self._stop_media_or_pause(process, job.id)
                     break
                 line = line.strip()
                 if line:
@@ -663,17 +790,20 @@ class FFmpegWorker:
                         self.log_callback(job.id, line)
 
             return_code = process.wait()
+            self._require_media_exit(process, job.id)
         except Exception:
-            self._kill_process(process, job.id)
+            if not self._kill_process(process, job.id):
+                raise StatePersistenceError(self.storage_error)
             raise
+
+        if self.stop_event.is_set():
+            raise RuntimeError('Сервис останавливается; remux сохранён для восстановления')
 
         if self._is_cancel_requested(job.id) or job.status == JobStatus.CANCELLED:
             self._mark_job_cancelled(job)
-            cleanup_file(tmp_output)
             raise RuntimeError('Задание отменено на шаге remux')
 
         if return_code not in (0, 1):
-            cleanup_file(tmp_output)
             raise RuntimeError(f'mkvmerge завершился с кодом {return_code}')
         if return_code == 1:
             logger.main_logger.warning(f'mkvmerge завершился с предупреждениями для {job.id}')
@@ -681,40 +811,41 @@ class FFmpegWorker:
             raise RuntimeError(f'Remux: mkvmerge не создал файл {tmp_output}')
 
         os.replace(tmp_output, job.output_path)
-        cleanup_file(encode_path)
-        cleanup_file(json_path)
         logger.main_logger.info(f'Remux завершён для {job.id}: {job.output_path}')
 
     def _run_ffmpeg(self, job: Job, cmd: list, encode_path: str | None = None):
         """Запускает FFmpeg и отслеживает прогресс"""
         process = None
         try:
+            if self.stop_event.is_set():
+                return
+            self._check_storage()
             if self._is_cancel_requested(job.id):
                 self._mark_job_cancelled(job)
                 return
 
-            process = subprocess.Popen(
+            process = popen_media(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 encoding='utf-8',
                 errors='replace',
-                bufsize=1
+                bufsize=1,
             )
             with self._lock:
                 self.processes[job.id] = process
 
             # Отмена могла прийти между проверкой и Popen
             if self._is_cancel_requested(job.id) or self.stop_event.is_set():
-                self._kill_process(process, job.id)
+                self._stop_media_or_pause(process, job.id)
                 self._mark_job_cancelled(job)
                 return
             
             # Читаем вывод FFmpeg построчно
             for line in iter(process.stdout.readline, ''):
                 if self.stop_event.is_set() or self._is_cancel_requested(job.id) or job.status == JobStatus.CANCELLED:
-                    self._kill_process(process, job.id)
+                    self._stop_media_or_pause(process, job.id)
                     break
                 
                 line = line.strip()
@@ -732,7 +863,11 @@ class FFmpegWorker:
             
             # Ждем завершения процесса
             return_code = process.wait()
+            self._require_media_exit(process, job.id)
             logger.log_ffmpeg_complete(job.id, return_code)
+
+            if self.stop_event.is_set():
+                return
 
             # Не перезаписывать CANCELLED кодом ошибки после kill
             if self._is_cancel_requested(job.id) or job.status == JobStatus.CANCELLED:
@@ -756,29 +891,38 @@ class FFmpegWorker:
 
                 logger.main_logger.info(f"Задание {job.id} завершено успешно")
                 
-                if self.status_callback:
-                    self.status_callback(job.id, job.status, job.error_message)
+                self._publish_status(job)
                 
                 # Удаляем временный исходник; internal/read-only не трогаем
-                self._cleanup_temp_original(job)
+                try:
+                    self._cleanup_temp_original(job)
+                    self._cleanup_job_sidecars(job)
+                except Exception:
+                    logger.main_logger.exception('Не удалось убрать файлы успешного задания %s', job.id)
             else:
+                self._check_storage()
                 job.status = JobStatus.ERROR
                 job.error_message = f"FFmpeg завершился с кодом {return_code}"
                 job.completed_at = utc_now()
                 
                 logger.log_ffmpeg_error(job.id, f"Код возврата: {return_code}")
                 
-                if self.status_callback:
-                    self.status_callback(job.id, job.status, job.error_message)
+                self._publish_status(job)
                 
                 if self.log_callback:
                     self.log_callback(job.id, f"Ошибка FFmpeg: код {return_code}")
         
+        except (StatePersistenceError, MediaProcessStillRunning):
+            raise
         except Exception as e:
             # Ошибка чтения/обработки вывода не должна оставлять encoder живым:
             # после возврата вызывающий код удаляет временные файлы задания.
             if process is not None:
-                self._kill_process(process, job.id)
+                if not self._kill_process(process, job.id):
+                    raise StatePersistenceError(self.storage_error)
+            if self.stop_event.is_set():
+                return
+            self._check_storage()
             if self._is_cancel_requested(job.id) or job.status == JobStatus.CANCELLED:
                 self._mark_job_cancelled(job)
             else:
@@ -786,8 +930,7 @@ class FFmpegWorker:
                 job.error_message = str(e)
                 job.completed_at = utc_now()
                 
-                if self.status_callback:
-                    self.status_callback(job.id, job.status, job.error_message)
+                self._publish_status(job)
                 
                 if self.log_callback:
                     self.log_callback(job.id, f"Ошибка выполнения: {str(e)}")
@@ -938,9 +1081,6 @@ class FFmpegWorker:
             process = self.processes.get(job_id)
             job_thread = self._job_threads.get(job_id)
 
-        if job is not None and job.status != JobStatus.DONE:
-            self._mark_job_cancelled(job)
-
         process_killed = True
         if process is not None:
             process_killed = self._kill_process(process, job_id)
@@ -953,7 +1093,20 @@ class FFmpegWorker:
         if job_thread is not None and job_thread is not threading.current_thread():
             job_thread.join(timeout=5)
         thread_stopped = job_thread is None or not job_thread.is_alive()
+        # Поток мог зарегистрировать следующий tool или orphan синхронного helper
+        # уже после первого снимка processes, пока stop_job ожидал его завершения.
+        with self._lock:
+            latest_process = self.processes.get(job_id)
+        if latest_process is not None and latest_process is not process:
+            latest_dead = self._kill_process(latest_process, job_id)
+            process_killed = process_killed and latest_dead
+            with self._lock:
+                if latest_dead and self.processes.get(job_id) is latest_process:
+                    del self.processes[job_id]
+            process = latest_process
         if thread_stopped and process_killed:
+            if job is not None and job.status not in (JobStatus.DONE, JobStatus.ERROR, JobStatus.CANCELLED):
+                self._mark_job_cancelled(job)
             with self._lock:
                 self._cancel_requested.discard(job_id)
 
@@ -974,11 +1127,13 @@ class FFmpegWorker:
         
         with self._lock:
             processes = list(self.processes.items())
-            self.processes.clear()
             job_threads = list(self._job_threads.values())
 
         for job_id, process in processes:
-            self._kill_process(process, job_id)
+            if self._kill_process(process, job_id):
+                with self._lock:
+                    if self.processes.get(job_id) is process:
+                        del self.processes[job_id]
 
         for thread in job_threads:
             if thread.is_alive():

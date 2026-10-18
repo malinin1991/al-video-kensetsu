@@ -102,7 +102,7 @@ def original_in_use_by_jobs(file_path, jobs, current_job_id=None):
     for job in jobs:
         if current_job_id and job.id == current_job_id:
             continue
-        if job.status not in active:
+        if job.public_status() not in active:
             continue
         if paths_refer_to_same_file(file_path, job.original_path):
             return True

@@ -94,6 +94,9 @@ def test_status_and_download_availability(api_env, tmp_path):
     job.progress = 100.0
     job.completed_at = utc_now()
     for status in (JobStatus.PLANNED, JobStatus.IN_PROGRESS, JobStatus.ERROR, JobStatus.CANCELLED):
+        get_job_store().delete_job(job.id)
+        job.status = JobStatus.PLANNED
+        get_job_store().insert_job(job)
         status_callback(job.id, status, 'Ошибка' if status == JobStatus.ERROR else None)
         data = client.get(url).get_json()
         assert data['status'] == status.value
@@ -102,6 +105,9 @@ def test_status_and_download_availability(api_env, tmp_path):
         assert data['output_size_bytes'] is None
         assert data['completed_at'].endswith('Z')
         assert client.head(url + '/download').status_code == 400
+    get_job_store().delete_job(job.id)
+    job.status = JobStatus.PLANNED
+    get_job_store().insert_job(job)
     status_callback(job.id, JobStatus.DONE, None)
     data = client.get(url).get_json()
     assert data['output_available'] is True
@@ -341,8 +347,9 @@ def test_interrupted_request_preserves_known_ids_and_never_resubmits(api_env, mo
         assert response.get_json()['job_ids'] == [job_id]
         assert 'Retry-After' not in response.headers
     job = client.get(f'/api/jobs/{job_id}').get_json()
-    assert job['status'] == 'error'
-    assert 'перезапуском' in job['error_message']
+    assert job['status'] == 'planned'
+    assert job['attempt_no'] == 1
+    assert get_job_store().queued_ids() == [job_id]
     assert job['input_path'] == payload['path']
     worker.add_job.assert_called_once()
 
@@ -371,14 +378,15 @@ def test_cancelled_job_remains_cancelled_after_restart(api_env):
     assert data['completed_at'].endswith('Z')
 
 
-def test_queue_failure_cleans_job_source_and_request_link(api_env):
+def test_queue_failure_retains_durable_job_source_and_request_link(api_env):
     root, uploads, worker, client = api_env
     worker.add_job.side_effect = RuntimeError('queue unavailable')
     response = client.post('/api/internal/encode', json={'path': video(root), 'request_id': 'queue-failed'})
-    assert response.status_code == 500
-    assert routes.get_all_jobs() == get_job_store().recover() == []
-    assert get_job_store().request_job_ids('queue-failed') == []
-    assert list(uploads.iterdir()) == []
+    assert response.status_code == 200
+    job_id = response.get_json()['job']['id']
+    assert get_job_store().queued_ids() == [job_id]
+    assert get_job_store().request_job_ids('queue-failed') == [job_id]
+    assert len(list(uploads.iterdir())) == 1
 
 
 def test_old_record_and_terminal_statuses_restore(tmp_path):
@@ -393,11 +401,13 @@ def test_old_record_and_terminal_statuses_restore(tmp_path):
         store.insert_job(Job.from_record(record))
     restored = {job.id: job for job in store.recover()}
     assert all(job.input_path is None for job in restored.values())
-    assert all(job.completed_at for job in restored.values())
+    assert all(restored[s.value].completed_at for s in (JobStatus.DONE, JobStatus.ERROR, JobStatus.CANCELLED))
     for status in (JobStatus.DONE, JobStatus.ERROR, JobStatus.CANCELLED):
         assert restored[status.value].status == status
     assert restored['error'].error_message == 'original-error'
-    assert restored['planned'].status == restored['in_progress'].status == JobStatus.ERROR
+    assert restored['planned'].status == restored['in_progress'].status == JobStatus.PLANNED
+    assert restored['in_progress'].attempt_no == 2
+    assert restored['planned'].attempt_no == 1
 
 
 def test_disabled_internal_mode_blocks_receipt_and_post(api_env, monkeypatch):

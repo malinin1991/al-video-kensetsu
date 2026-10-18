@@ -139,6 +139,14 @@ window.socket.io.on('reconnect', (attemptNumber) => {
     // Глобальные обработчики для обновления прогресса везде
     window.socket.on('progress_update', (data) => {
         // Обновляем прогресс во всех контейнерах заданий
+        const cached = window.jobsCache[data.job_id];
+        if (data.attempt_no != null) {
+            if (!cached || (cached.attempt_no || 1) < data.attempt_no || (cached.revision || 0) < data.revision) {
+                loadJobsOnConnect();
+                return;
+            }
+            if ((cached.attempt_no || 1) !== data.attempt_no || cached.revision !== data.revision) return;
+        }
         updateJobProgressGlobally(data.job_id, data.progress);
     });
 
@@ -171,6 +179,14 @@ function mergeJobData(existing, incoming) {
     }
     if (!existing) {
         return { ...incoming };
+    }
+
+    const oldAttempt = existing.attempt_no || 1;
+    const newAttempt = incoming.attempt_no || 1;
+    if (newAttempt < oldAttempt) return { ...existing };
+    if (newAttempt > oldAttempt) return { ...incoming };
+    if (existing.revision != null && incoming.revision != null && incoming.revision < existing.revision) {
+        return { ...existing };
     }
 
     const merged = { ...existing, ...incoming };

@@ -83,10 +83,17 @@ def progress_callback(job_id, progress):
     job = get_job(job_id)
     if job:
         job.progress = progress
-    socketio.emit('progress_update', {
-        'job_id': job_id,
-        'progress': progress
-    })
+    else:
+        return
+    try:
+        socketio.emit('progress_update', {
+            'job_id': job_id,
+            'progress': progress,
+            'attempt_no': job.attempt_no,
+            'revision': job.revision,
+        })
+    except Exception:
+        _log.warning('Не удалось отправить прогресс задания %s', job_id, exc_info=True)
 
 def _emit_log_update(entry):
     """Отправляет запись лога через WebSocket."""
@@ -113,10 +120,22 @@ def status_callback(job_id, status, error_message):
         if error_message:
             job.error_message = error_message
         from app.job_store import get_job_store
-        get_job_store().save_job(job)
-        socketio.emit('job_update', job.to_dict())
+        if not get_job_store().save_job(job):
+            raise RuntimeError('Устаревшая попытка или удалённое задание')
+        try:
+            socketio.emit('job_update', job.to_dict())
+        except Exception:
+            _log.warning('Job %s сохранён, но отправка обновления не удалась', job.id, exc_info=True)
 
-ffmpeg_worker = FFmpegWorker(progress_callback, log_callback, status_callback)
+from app.job_store import get_job_store, get_job_store_path
+from app.execution import acquire_execution
+from app.routes import get_jobs_storage
+_execution_path = get_job_store_path()
+os.makedirs(os.path.dirname(_execution_path), exist_ok=True)
+acquire_execution(_execution_path)
+_execution_store = get_job_store()
+ffmpeg_worker = FFmpegWorker(progress_callback, log_callback, status_callback,
+                             store=_execution_store, jobs=get_jobs_storage(), autostart=False)
 
 from app.log_manager import log_manager
 log_manager.set_emit_callback(_emit_log_update)
@@ -135,12 +154,37 @@ app.register_error_handler(CatalogError, _preset_error_response)
 from app.routes import restore_jobs, set_ffmpeg_worker
 set_ffmpeg_worker(ffmpeg_worker)
 restore_jobs()
+_restored_jobs = list(get_jobs_storage().values())
+_log.info('Восстановление: ожидают=%s, повторены активные=%s, терминальные=%s, очередь=%s',
+          sum(j.status.value == 'planned' for j in _restored_jobs),
+          sum(j.status.value == 'planned' and j.last_recovered_at is not None for j in _restored_jobs),
+          sum(j.status.value in ('done', 'error', 'cancelled') for j in _restored_jobs),
+          _execution_store.queued_ids())
+from app.internal_source import get_uploads_dir
+from app.file_utils import get_outputs_dir
+for _directory in (get_uploads_dir(), get_outputs_dir()):
+    if not os.path.isdir(_directory) and any(
+            job.status.value in ('planned', 'in_progress') for job in get_jobs_storage().values()):
+        raise RuntimeError(f'Хранилище недоступно: {_directory}')
+    os.makedirs(_directory, exist_ok=True)
+    if not os.access(_directory, os.R_OK | os.W_OK | os.X_OK):
+        raise RuntimeError(f'Нет доступа к хранилищу: {_directory}')
+ffmpeg_worker.start_worker()
+
+
+@app.before_request
+def reject_encode_when_unavailable():
+    if request.method == 'POST' and request.path in ('/api/upload', '/api/internal/encode'):
+        if ffmpeg_worker.storage_error or ffmpeg_worker.stop_event.is_set():
+            return {'error': 'Исполнение приостановлено; проверьте хранилище и перезапустите сервер'}, 503
 
 @app.route('/health')
 def health_check():
     """Проверка здоровья приложения"""
     from app.routes import get_all_jobs
     jobs = get_all_jobs()
+    if ffmpeg_worker.storage_error or ffmpeg_worker.stop_event.is_set():
+        return {'status': 'unavailable', 'error': ffmpeg_worker.storage_error or 'Сервер останавливается'}, 503
     return {'status': 'healthy', 'jobs_count': len(jobs)}
 
 @socketio.on('connect')

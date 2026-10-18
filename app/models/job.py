@@ -55,6 +55,12 @@ class Job:
     input_path: str | None = None
     request_id: str | None = None
     preset_snapshot: dict | None = None
+    attempt_no: int = 1
+    revision: int = 1
+    recovery_count: int = 0
+    last_recovered_at: datetime | None = None
+    dispatch_order: int | None = None
+    execution_run_id: str | None = None
     
     def __post_init__(self):
         if self.created_at is None:
@@ -120,7 +126,7 @@ class Job:
 
     def available_output_size(self) -> int | None:
         """Размер доступного финального файла; видео не читается."""
-        if self.status != JobStatus.DONE or not self.output_path:
+        if self.public_status() != JobStatus.DONE or not self.output_path:
             return None
         try:
             info = os.stat(self.output_path)
@@ -134,13 +140,33 @@ class Job:
         """Внутренняя запись для диска, включая рабочие пути и хеш."""
         record = asdict(self)
         record['status'] = self.status.value
-        for key in ('created_at', 'started_at', 'completed_at'):
+        for key in ('created_at', 'started_at', 'completed_at', 'last_recovered_at'):
             record[key] = _iso_utc(getattr(self, key))
         return record
 
     @classmethod
     def from_record(cls, record: dict) -> 'Job':
         record = dict(record)
+        for field, minimum in (('attempt_no', 1), ('revision', 1), ('recovery_count', 0)):
+            value = record.get(field, minimum)
+            if type(value) is not int or value < minimum:
+                raise ValueError(f'Повреждённое поле {field}')
+        order = record.get('dispatch_order')
+        if order is not None and (type(order) is not int or order < 1):
+            raise ValueError('Повреждённое поле dispatch_order')
+        for field in ('id', 'filename', 'original_path'):
+            if not isinstance(record.get(field), str):
+                raise ValueError(f'Повреждённое поле {field}')
+        if record.get('output_path') is not None and not isinstance(record['output_path'], str):
+            raise ValueError('Повреждённое поле output_path')
+        downmix = record.get('audio_downmix', 'none')
+        if downmix not in ('none', 'stereo'):
+            raise ValueError('Повреждённое поле audio_downmix')
+        params = record.get('ffmpeg_params')
+        if isinstance(params, dict) and 'audio_downmix' in params:
+            if params['audio_downmix'] != downmix:
+                raise ValueError('Сохранённые параметры audio_downmix не совпадают')
+        record['audio_downmix'] = downmix
         # История никогда не разрешает пресеты заново, в том числе при повреждении.
         if not isinstance(record.get('preset_snapshot'), dict):
             record['preset_snapshot'] = {'legacy': True}
@@ -149,13 +175,23 @@ class Job:
             record['status'] = JobStatus.ERROR.value
             record['error_message'] = 'Не удалось восстановить параметры задания'
         record['status'] = JobStatus(record['status'])
-        for key in ('created_at', 'started_at', 'completed_at'):
+        for key in ('created_at', 'started_at', 'completed_at', 'last_recovered_at'):
             value = record.get(key)
             record[key] = datetime.fromisoformat(value) if value else None
-        return cls(**record)
+        job = cls(**record)
+        job._committed_record = job.to_record()
+        return job
+
+    def public_status(self):
+        saved = getattr(self, '_committed_record', None)
+        if saved is not None and self.status in (JobStatus.DONE, JobStatus.ERROR, JobStatus.CANCELLED):
+            return JobStatus(saved['status'])
+        return self.status
     
     def to_dict(self):
         """Преобразует объект в словарь для JSON сериализации"""
+        if self.public_status() != self.status:
+            return Job.from_record(self._committed_record).to_dict()
         # Убеждаемся, что все значения в ffmpeg_params являются строками
         safe_ffmpeg_params = {}
         if self.ffmpeg_params:
@@ -168,6 +204,10 @@ class Job:
         output_size = self.available_output_size()
         return {
             'id': self.id,
+            'attempt_no': self.attempt_no,
+            'revision': self.revision,
+            'recovery_count': self.recovery_count,
+            'last_recovered_at': _iso_utc(self.last_recovered_at),
             'input_path': self.input_path,
             'request_id': self.request_id,
             'filename': self.filename,

@@ -2,6 +2,8 @@ video-encoder:
   image: registry.mageek.su/al-web-video-encoder:latest
   pull_policy: always
   container_name: altt_video_encoder
+  init: true
+  stop_grace_period: 30s
   restart: unless-stopped
   ports:
     - "3000:5000"

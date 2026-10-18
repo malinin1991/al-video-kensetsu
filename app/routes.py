@@ -178,15 +178,20 @@ def add_job(job: Job):
     logger.log_job_created(job.id, job.filename, job.status.value)
     
     store = get_job_store()
+    # Сначала durable файл, затем durable Job/попытка/очередь.
+    with open(job.original_path, 'rb') as source:
+        os.fsync(source.fileno())
+    from app.file_utils import sync_directory
+    sync_directory(os.path.dirname(job.original_path))
     store.insert_job(job)
-    jobs_storage[job.id] = job
     try:
+        # Диспетчер уже мог загрузить committed Job из SQLite и запустить его.
+        # Обе стороны публикуют один объект, не перезаписывая исполняемый snapshot.
+        job = jobs_storage.setdefault(job.id, job)
         ffmpeg_worker = get_ffmpeg_worker_instance()
         ffmpeg_worker.add_job(job)
     except Exception:
-        jobs_storage.pop(job.id, None)
-        store.delete_job(job.id, discard_request_link=True)
-        raise
+        logger.main_logger.exception('Job %s принят в SQLite; RAM-очередь будет восстановлена', job.id)
 
     # Сразу уведомляем UI (до старта кодирования status_callback ещё не вызывается)
     _emit_job_update(job)
@@ -215,8 +220,17 @@ def update_job_status(job_id: str, status: JobStatus, error_message: str = None)
 
 
 def restore_jobs():
-    """Восстанавливает историю без автоматического запуска прерванных заданий."""
+    """До запуска диспетчера: активные в начало, ожидающие в прежнем порядке."""
     jobs_storage.update({job.id: job for job in get_job_store().recover()})
+    for job_id, action in get_job_store().actions().items():
+        job = get_job(job_id)
+        if action == 'delete' and job is not None:
+            delete_job_by_id(job_id)
+        else:
+            if job and job.status == JobStatus.CANCELLED and not original_in_use_by_jobs(
+                    job.original_path, get_all_jobs(), job.id):
+                cleanup_job_original(job.original_path)
+            get_job_store().finish_action(job_id, expected=action)
 
 @main_bp.route('/')
 def index():
@@ -826,6 +840,8 @@ def create_job_from_saved_file(
     """
     bound_path = file_path
     job_added = False
+    job = None
+    acceptance_started = False
     try:
         logger.upload_logger.info(f"Обработка одиночного файла: {filename}")
 
@@ -855,12 +871,15 @@ def create_job_from_saved_file(
             request_id=request_id,
         )
 
+        acceptance_started = True
         added_job = add_job(job)
         job_added = True
         logger.upload_logger.info(f"Одиночный файл обработан успешно: задание {added_job.id}")
         return added_job, None
     except Exception as e:
-        if not job_added and bound_path and bound_path != file_path:
+        if job is not None and getattr(job, '_durable_accepted', False):
+            return job, None
+        if not acceptance_started and not job_added and bound_path and bound_path != file_path:
             cleanup_file(bound_path)
         return None, f'Ошибка загрузки файла: {str(e)}'
 
@@ -1271,7 +1290,7 @@ def download_jobs_batch():
     missing = []
     for job_id in job_ids:
         job = get_job(job_id)
-        if not job or job.status != JobStatus.DONE or not job.output_path:
+        if not job or job.public_status() != JobStatus.DONE or not job.output_path:
             continue
         if job.available_output_size() is None:
             missing.append({
@@ -1346,6 +1365,7 @@ def delete_job_by_id(job_id: str) -> dict:
     if not job:
         raise KeyError(job_id)
 
+    get_job_store().set_action(job_id, 'delete')
     ffmpeg_worker = get_ffmpeg_worker_instance()
     stop_result = ffmpeg_worker.stop_job(job_id)
     logger.main_logger.info(f"Удаление задания {job_id}: {stop_result}")
@@ -1370,6 +1390,9 @@ def delete_job_by_id(job_id: str) -> dict:
 
     if job.output_path:
         cleanup_job_sidecars(job.output_path, job.id)
+        from app.ffmpeg_worker import FFmpegWorker
+        for number in range(1, job.attempt_no+1):
+            cleanup_job_sidecars(FFmpegWorker._attempt_output(job, number), job.id)
 
     jobs_storage = get_jobs_storage()
     get_job_store().delete_job(job_id)
@@ -1436,7 +1459,7 @@ def download_file(job_id):
     if not job:
         return jsonify({'error': 'Задание не найдено'}), 404
     
-    if job.status != JobStatus.DONE:
+    if job.public_status() != JobStatus.DONE:
         return jsonify({'error': 'Файл еще не готов'}), 400
     
     if job.available_output_size() is None:
@@ -1490,25 +1513,30 @@ def stop_job(job_id):
     if not job:
         return jsonify({'error': 'Задание не найдено'}), 404
     
-    if job.status not in (JobStatus.IN_PROGRESS, JobStatus.PLANNED):
+    if job.public_status() not in (JobStatus.IN_PROGRESS, JobStatus.PLANNED):
         return jsonify({'error': 'Задание не выполняется и не в очереди'}), 400
     
     try:
+        get_job_store().set_action(job_id, 'stop')
         ffmpeg_worker = get_ffmpeg_worker_instance()
         stop_result = ffmpeg_worker.stop_job(job_id)
         if not stop_result.get('process_dead', True) or not stop_result.get('thread_stopped', True):
             return jsonify({'error': 'Задание ещё останавливается; повторите запрос позднее', 'stop': stop_result}), 409
         # Финализация могла успеть завершиться одновременно с запросом отмены.
-        if job.status == JobStatus.DONE:
+        if job.public_status() in (JobStatus.DONE, JobStatus.ERROR, JobStatus.CANCELLED):
+            get_job_store().finish_action(job_id)
             return jsonify({'message': 'Задание уже завершено', 'stop': stop_result})
-        if job.output_path:
-            cleanup_job_sidecars(job.output_path, job.id)
         update_job_status(job_id, JobStatus.CANCELLED, 'Отменено пользователем')
         job = get_job(job_id)
         if job:
             if not job.completed_at:
                 job.completed_at = utc_now()
             get_job_store().save_job(job)
+            if job.output_path:
+                cleanup_job_sidecars(job.output_path, job.id)
+            if not original_in_use_by_jobs(job.original_path, get_all_jobs(), job.id):
+                cleanup_job_original(job.original_path)
+            get_job_store().finish_action(job_id)
             _emit_job_update(job)
         
         return jsonify({

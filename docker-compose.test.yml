@@ -23,6 +23,8 @@ services:
       - CORS_ORIGINS=http://localhost:5001,http://127.0.0.1:5001,http://172.18.0.1:5001,http://pc13.local:5001,http://*.local:5001
       - SOCKETIO_ASYNC_MODE=threading
       - PRESET_EDITOR_PUBLIC_ORIGIN=${PRESET_EDITOR_PUBLIC_ORIGIN:-}
+    init: true
+    stop_grace_period: 30s
     restart: "no"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]

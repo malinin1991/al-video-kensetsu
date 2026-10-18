@@ -4,6 +4,16 @@ from werkzeug.utils import secure_filename
 import mimetypes
 
 
+def sync_directory(path):
+    """Зафиксировать публикацию/переименование файла в родительском каталоге."""
+    if os.name == 'posix':
+        fd = os.open(path or '.', os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
 ALLOWED_EXTENSIONS = {'.mp4', '.mkv'}
 ALLOWED_MIME_TYPES = {'video/mp4', 'video/x-matroska'}
 

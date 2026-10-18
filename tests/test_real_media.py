@@ -25,6 +25,28 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def real_worker_storage(monkeypatch):
+    import sys
+    from app.job_store import get_job_store
+    from app.ffmpeg_worker import FFmpegWorker
+    from app.main import progress_callback, log_callback, status_callback
+    from app.file_utils import get_outputs_dir
+    Path(get_outputs_dir()).mkdir(parents=True, exist_ok=True)
+    worker = FFmpegWorker(progress_callback, log_callback, status_callback,
+                          store=get_job_store(), jobs=routes.jobs_storage, autostart=False)
+    add_job = worker.add_job
+
+    def start_on_accept(job):
+        add_job(job)
+        worker.start_worker()
+
+    monkeypatch.setattr(worker, 'add_job', start_on_accept)
+    monkeypatch.setattr(sys.modules[__name__], 'ffmpeg_worker', worker)
+    yield
+    worker.stop_worker()
+
+
 @pytest.mark.parametrize('audio_id,downmix,codec,channels', [
     ('copy', 'none', 'aac', 6),
     ('opus', 'stereo', 'opus', 2),

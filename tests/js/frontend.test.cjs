@@ -235,6 +235,23 @@ test('progress is monotonic and late events cannot change terminal jobs', () => 
     assert.equal(context.getJobProgress({ progress: 'bad' }), 0);
 });
 
+test('recovery resets progress only for a newer attempt and rejects old snapshots', () => {
+    const { context } = frontend();
+    const old = { id: 'A', status: 'in_progress', progress: 97, attempt_no: 1, revision: 3 };
+    const restarted = { id: 'A', status: 'planned', progress: 0, attempt_no: 2, revision: 4, recovery_count: 1 };
+    const merged = context.mergeJobData(old, restarted);
+    assert.equal(merged.progress, 0);
+    assert.equal(merged.status, 'planned');
+    const late = context.mergeJobData(merged, { ...old, status: 'done', progress: 100, revision: 100 });
+    assert.equal(late.attempt_no, 2);
+    assert.equal(late.progress, 0);
+    assert.equal(late.status, 'planned');
+    const active = context.mergeJobData(merged, { ...restarted, status: 'in_progress', progress: 12, revision: 5 });
+    assert.equal(context.mergeJobData(active, restarted).status, 'in_progress');
+    assert.match(context.jobRecoveryHtml(restarted), /начало очереди/);
+    assert.match(context.jobRecoveryHtml(restarted), /Попытка 2/);
+});
+
 test('missing output disables download in cards, rows and batch actions', () => {
     const { context } = frontend();
     const job = { id: 'missing', filename: 'file.mkv', status: 'done', output_available: false };

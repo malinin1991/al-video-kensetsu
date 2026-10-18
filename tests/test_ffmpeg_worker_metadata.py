@@ -23,7 +23,8 @@ FORBIDDEN_FFMPEG_FLAGS = (
 
 
 @pytest.fixture
-def worker():
+def worker(monkeypatch):
+    monkeypatch.setattr('app.execution.guarded_command', lambda cmd, **_: (cmd, {}))
     instance = FFmpegWorker.__new__(FFmpegWorker)
     instance.progress_callback = None
     instance.log_callback = None
@@ -88,7 +89,7 @@ def test_ffmpeg_command_never_contains_metadata_when_enabled(worker):
         cmd = worker._build_ffmpeg_command(job)
 
     _assert_no_metadata(cmd)
-    assert cmd[-1] == '/tmp/out.partial.mkv'
+    assert cmd[-1] == '/tmp/out.attempt-1.partial.mkv'
     assert cmd[-2] == '-y'
 
 
@@ -98,7 +99,7 @@ def test_ffmpeg_command_never_contains_metadata_when_disabled(worker):
         cmd = worker._build_ffmpeg_command(job)
 
     _assert_no_metadata(cmd)
-    assert cmd[-1] == '/tmp/out.mkv'
+    assert cmd[-1] == '/tmp/out.attempt-1.partial.mkv'
 
 
 def test_ffmpeg_omits_optional_video_flags_when_unset(worker):
@@ -134,8 +135,10 @@ def test_ffmpeg_track_pair_mismatch_raises(worker):
             worker._build_ffmpeg_command(job)
 
 
-def test_finalize_remuxes_only_when_enabled(worker):
+def test_finalize_remuxes_only_when_enabled(worker, tmp_path):
     enabled = _job(update_metadata='true')
+    enabled.output_path = str(tmp_path / 'out.mkv')
+    (tmp_path / 'out.mkv').write_bytes(b'remux-result')
     with patch.object(worker, '_fix_font_mimes_before_merge') as fix_fonts, patch.object(
         worker, '_run_mkvmerge_remux'
     ) as remux:
@@ -144,11 +147,12 @@ def test_finalize_remuxes_only_when_enabled(worker):
         remux.assert_called_once_with(enabled, '/tmp/out.partial.mkv')
 
     disabled = _job(update_metadata='false')
+    disabled.output_path = str(tmp_path / 'out.mkv')
     with patch.object(worker, '_fix_font_mimes_before_merge') as fix_fonts, patch.object(
         worker, '_run_mkvmerge_remux'
     ) as remux:
-        worker._finalize_encoded_output(disabled, '/tmp/out.mkv')
-        fix_fonts.assert_called_once_with(disabled, '/tmp/out.mkv')
+        worker._finalize_encoded_output(disabled, disabled.output_path)
+        fix_fonts.assert_called_once_with(disabled, disabled.output_path)
         remux.assert_not_called()
 
 
@@ -168,6 +172,7 @@ def test_finalize_fixes_font_mimes_before_remux(worker, tmp_path):
     encode.write_bytes(b'enc')
     job = _job(update_metadata='true')
     job.output_path = str(tmp_path / 'out.mkv')
+    (tmp_path / 'out.mkv').write_bytes(b'remux-result')
 
     with patch(
         'app.ffmpeg_worker.fix_font_attachment_mime_types',
@@ -221,6 +226,9 @@ def test_run_mkvmerge_remux_writes_json_and_invokes_atfile(worker, tmp_path):
                 handle.write(b'mkv')
             return 0
 
+        def poll(self):
+            return 0
+
     captured = {}
 
     def capture_write(path, options):
@@ -240,7 +248,7 @@ def test_run_mkvmerge_remux_writes_json_and_invokes_atfile(worker, tmp_path):
     ), patch(
         'app.ffmpeg_worker.subprocess.Popen',
     ) as popen:
-        popen.side_effect = lambda cmd, **kwargs: FakeProc(str(final) + '.remux.tmp')
+        popen.side_effect = lambda cmd, **kwargs: FakeProc(str(final.with_suffix('')) + '.attempt-1.mkv.remux.tmp')
         worker._run_mkvmerge_remux(job, str(encode))
 
         popen.assert_called_once()
@@ -254,6 +262,8 @@ def test_run_mkvmerge_remux_writes_json_and_invokes_atfile(worker, tmp_path):
         assert kwargs.get('text') is True
 
     assert final.exists()
+    assert encode.exists()  # очищается после commit DONE
+    worker._cleanup_job_sidecars(job)
     assert not encode.exists()
     json_path = tmp_path / f'out.{job.id}.mkvmerge.json'
     assert not json_path.exists()
@@ -357,6 +367,34 @@ class _FakeEncodeProc:
 
     def poll(self):
         return self.returncode
+
+
+@pytest.mark.parametrize('terminal', [JobStatus.DONE, JobStatus.ERROR, JobStatus.CANCELLED])
+def test_failed_terminal_commit_retains_source_and_artifacts(worker, tmp_path, terminal):
+    source = tmp_path/'input.mkv'
+    source.write_bytes(b'source')
+    job = _job(update_metadata='false')
+    job.original_path = str(source)
+
+    def status(_id, state, _error):
+        if state == terminal:
+            raise OSError('disk failure')
+
+    def finish(current, *_):
+        from pathlib import Path
+        Path(worker._encode_output_path(current)).write_bytes(b'unconfirmed')
+        current.status = terminal
+        worker._publish_status(current)
+
+    worker.status_callback = status
+    with patch.object(worker, '_ensure_mkvmerge_preflight'), patch.object(worker, '_warn_multiple_audio_tracks'), \
+            patch.object(worker, '_build_ffmpeg_command', return_value=['ffmpeg']), \
+            patch.object(worker, '_run_ffmpeg', side_effect=finish):
+        worker._process_job(job)
+    from pathlib import Path
+    assert source.exists()
+    assert Path(worker._encode_output_path(job)).exists()
+    assert worker.storage_error == 'disk failure'
 
 
 def test_job_availability_waits_for_final_remux_and_survives_restore(worker, tmp_path):

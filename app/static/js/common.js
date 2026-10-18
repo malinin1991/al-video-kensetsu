@@ -438,6 +438,14 @@ function getJobProgressText(job) {
 }
 
 // Функция создания элемента задания (для главной страницы)
+function jobRecoveryHtml(job) {
+    if (!job.recovery_count) return '';
+    const message = job.status === 'planned'
+        ? 'Возвращено в начало очереди после перезапуска сервера. Кодирование начнётся заново.'
+        : 'Кодирование начато заново после перезапуска сервера.';
+    return `<div class="text-muted small mt-1">${escapeHtml(message)} Попытка ${Number(job.attempt_no) || 1}.</div>`;
+}
+
 function createJobElement(job) {
     const statusClass = `status-${job.status}`;
     const statusText = getStatusText(job.status);
@@ -527,6 +535,7 @@ function createJobElement(job) {
                     <div class="flex-grow-1" style="min-width: 0;">
                         <h6 class="card-title" title="${escapeHtml(job.filename)}">${escapeHtml(job.filename)}</h6>
                         <span class="badge ${statusClass}">${statusText}</span>
+                        ${jobRecoveryHtml(job)}
                         ${job.error_message ? `<div class="text-danger small mt-1">${escapeHtml(job.error_message)}</div>` : ''}
                     </div>
                 </div>
@@ -604,7 +613,7 @@ function createJobRow(job) {
         <td>${jobCheckboxHtml(job.id)}</td>
         <td><code>${job.id.substring(0, 8)}...</code></td>
         <td>${escapeHtml(job.filename)}</td>
-        <td><span class="badge ${statusClass}">${statusText}</span></td>
+        <td><span class="badge ${statusClass}">${statusText}</span>${jobRecoveryHtml(job)}</td>
         <td class="job-progress-cell">${progressHtml}</td>
         <td>${createdDate}</td>
         <td>${actionsHtml}</td>

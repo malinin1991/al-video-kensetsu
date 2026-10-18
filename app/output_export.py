@@ -305,7 +305,7 @@ def save_job_output(job, directory, *, overwrite=False, create_directories=False
         raise OutputExportError('overwrite должен быть логическим значением', 400)
     if not isinstance(create_directories, bool):
         raise OutputExportError('create_directories должен быть логическим значением', 400)
-    if job.status != JobStatus.DONE:
+    if job.public_status() != JobStatus.DONE:
         raise OutputExportError('Файл ещё не готов', 400)
     if not job.output_path:
         raise OutputExportError('Выходной файл не найден', 404)

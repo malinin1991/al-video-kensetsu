@@ -34,6 +34,8 @@ services:
       - SOCKETIO_ASYNC_MODE=threading
       - PRESET_EDITOR_PUBLIC_ORIGIN=${PRESET_EDITOR_PUBLIC_ORIGIN:-}
       - INTERNAL_SOURCE_ROOTS=/anilibria
+    init: true
+    stop_grace_period: 30s
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]

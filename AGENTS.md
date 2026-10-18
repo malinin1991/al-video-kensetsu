@@ -22,8 +22,16 @@
   Импорт `app.main` создаёт лог-файлы и фоновый воркер; он имеет побочные эффекты.
 - Jobs и квитанции internal encode сохраняются в SQLite (`app/job_store.py`,
   `JOB_STORE_PATH`, default `/app/settings/jobs.sqlite3`). При старте история
-  восстанавливается; `planned`/`in_progress` становятся `error` без автозапуска.
-  Очередь и live логи остаются в RAM одного процесса; outputs сами не создают Jobs.
+  восстанавливается вместе с постоянной очередью: прежние `in_progress` получают
+  новую попытку в начале, `planned` сохраняют взаимный порядок. `error`/`done`/
+  `cancelled` не повторяются. Попытки, версии и намерения stop/delete сохраняются;
+  live логи остаются в RAM. Outputs сами не создают Jobs.
+  `app/execution.py` и `app/process_guard.py` удерживают POSIX lease до завершения
+  медиапроцессов; native Windows требует Docker. Сохранять settings/uploads/outputs.
+  Служебная остановка сохраняет исходники, терминальная очистка — только после commit.
+  Route и dispatcher публикуют один Job через `setdefault`: не подменять объект
+  уже запущенного задания. Выход guardian проверяется отдельным inherited pipe;
+  неподтверждённые FFmpeg и синхронные helpers остаются tracked, stop/delete дают 409.
 - `input_path` — точная строка internal `path`/`paths`, отдельно от временного
   `original_path`. `request_id` резервируется до копирования; готовый ответ
   неизменяем. GET квитанции — `/api/internal/encode/requests/<request_id>`;
